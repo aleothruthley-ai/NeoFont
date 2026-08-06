@@ -10,6 +10,7 @@
 // ================= [私有方法声明：解决编译报错] =================
 @interface UIFont (NeoFontPrivate)
 + (id)fontWithName:(NSString *)fontName size:(CGFloat)fontSize traits:(int)traits;
++ (id)_keyboardFontOfSize:(double)size weight:(double)weight;
 @end
 
 // ================= [全局配置变量] =================
@@ -20,13 +21,16 @@ static CGFloat g_fontSizeScale = 1.0;
 static NSArray *g_blacklist = nil;
 static BOOL g_isSpringBoard = NO;
 
-// 【核心防护】：C级线程局部变量。只在核心 %orig 调用时加锁，打破 CoreText 死循环！
+// 【核心防护】：C级线程局部变量。只在 %orig 调用时加锁，打破 CoreText 死循环！
 static __thread BOOL isHooking = NO;
 
-// ================= [终极防崩：只拦截后台图片缓存队列] =================
+// ================= [终极防崩：只拦截后台并发图片缓存队列] =================
 static BOOL isDangerousIconQueue() {
     if (!g_isSpringBoard) return NO;
-    if ([NSThread isMainThread]) return NO; // 主线程 (锁屏/小组件/通知) 全部放行！
+    
+    // 【主线程特权】：只要是能在屏幕上肉眼看到的（文件夹动画、小组件、锁屏），都在主线程。
+    // 直接放行主线程，不仅不卡死，且保证 100% 覆盖！
+    if ([NSThread isMainThread]) return NO;
     
     const char *label = dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL);
     if (!label) return NO;
@@ -49,6 +53,7 @@ static BOOL shouldBypassFont(NSString *fontName) {
     if ([fontName isEqualToString:g_customFontName] || [fontName isEqualToString:g_customBoldFontName]) return YES;
     
     NSString *lower = [fontName lowercaseString];
+    // 过滤掉符号字体、表情、相机和系统图标，防止乱码
     if ([lower containsString:@"icon"] || 
         [lower containsString:@"emoji"] || 
         [lower containsString:@"glyph"] || 
@@ -72,7 +77,7 @@ static CGFloat getScaledSize(CGFloat originalSize) {
     return originalSize * g_fontSizeScale;
 }
 
-// ================= [核心通用转换器：彻底解决卡死与漏覆盖] =================
+// ================= [核心通用转换器：解决文件夹卡死与键盘漏杀的终极方案] =================
 static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     if (!origDesc || isDangerousIconQueue()) return origDesc;
     
@@ -81,7 +86,7 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
 
     BOOL wantBold = (origDesc.symbolicTraits & UIFontDescriptorTraitBold) != 0;
     
-    // 【键盘漏覆盖修复 1】iOS 有时把粗体权重藏在 Traits 字典里，导致我们漏判粗体
+    // 【键盘漏杀修复】键盘常常把粗体权重藏在 Traits 字典深处
     NSDictionary *traitsDict = origDesc.fontAttributes[UIFontDescriptorTraitsAttribute];
     if (traitsDict && traitsDict[UIFontWeightTrait]) {
         if ([traitsDict[UIFontWeightTrait] floatValue] >= 0.2) wantBold = YES;
@@ -90,35 +95,30 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     NSString *targetFont = (wantBold && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return origDesc;
 
-    UIFontDescriptor *newDesc = [UIFontDescriptor fontDescriptorWithName:targetFont size:origDesc.pointSize];
-    
-    // 💥【文件夹卡死终极修复】：保留原字体的变换矩阵！
-    // 文件夹展开动画强依赖 Matrix 进行渲染。如果不继承，CoreAnimation 瞬间死循环卡死！
-    id matrix = origDesc.fontAttributes[@"UIFontDescriptorMatrixAttribute"];
-    if (!matrix) matrix = origDesc.fontAttributes[@"NSFontMatrixAttribute"];
-    if (matrix) {
-        newDesc = [newDesc fontDescriptorByAddingAttributes:@{@"UIFontDescriptorMatrixAttribute": matrix}];
-    }
-    
-    if (origDesc.symbolicTraits) {
-        UIFontDescriptor *traitDesc = [newDesc fontDescriptorWithSymbolicTraits:origDesc.symbolicTraits];
-        // 【键盘漏覆盖修复 2】如果自定义字体不支持苹果的特殊压缩特征，traitDesc 会返回 nil。
-        // 以前我们直接返回 nil 导致退回系统字体，现在我们用自定义无特征字体兜底！键盘100%覆盖！
-        if (traitDesc) {
-            newDesc = traitDesc;
-        }
-    }
-    return newDesc;
+    // 💥【终极修复】：绝不重新生成 Descriptor，而是使用 AddingAttributes 进行覆盖！
+    // 这样，苹果私有的矩阵(Matrix)、动画参数、键盘紧凑排版特征，全部原封不动保留！
+    // 文件夹动画再也不会卡死，键盘也绝不会因为丢了特征而退回系统字体！
+    return [origDesc fontDescriptorByAddingAttributes:@{
+        @"UIFontDescriptorNameAttribute": targetFont,
+        @"NSFontNameAttribute": targetFont,
+        @"UIFontDescriptorFamilyAttribute": targetFont
+    }];
 }
 
 %hook UIFontDescriptor
+// 键盘在获取特殊样式时会调用此方法
 - (id)fontDescriptorWithSymbolicTraits:(unsigned int)traits {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     
     id orig = %orig;
+    // 如果系统自带字体不支持某个特征返回 nil，我们强行用自定义字体进行兜底！
     if (!orig) {
         NSString *target = (traits & UIFontDescriptorTraitBold) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
-        return [UIFontDescriptor fontDescriptorWithName:target size:self.pointSize];
+        return [self fontDescriptorByAddingAttributes:@{
+            @"UIFontDescriptorNameAttribute": target,
+            @"NSFontNameAttribute": target,
+            @"UIFontDescriptorFamilyAttribute": target
+        }];
     }
     return orig;
 }
@@ -184,11 +184,12 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     if (isHooking) return %orig;
     
     UIFontDescriptor *newDesc = getReplacedDescriptor(descriptor);
-    CGFloat targetSize = (size > 0) ? size : descriptor.pointSize;
-    newDesc = [newDesc fontDescriptorWithSize:getScaledSize(targetSize)];
+    // 注意：如果是从 Descriptor 提取，不在这里乘倍数，因为 getScaledSize 应该在最初传入的时候生效
+    // 如果 descriptor.pointSize 已经被放大过，这里不能重复放大。我们只负责传给 orig。
+    CGFloat targetSize = (size > 0) ? getScaledSize(size) : 0; 
     
     isHooking = YES;
-    id ret = %orig(newDesc, 0);
+    id ret = %orig(newDesc, targetSize);
     isHooking = NO;
     
     return ret ? ret : %orig;
@@ -201,7 +202,8 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     UIFontDescriptor *newDesc = getReplacedDescriptor(descriptor);
     
     isHooking = YES;
-    id ret = %orig(newDesc, getScaledSize(size), scaling, pointScaling, maxScaling, ib, weight);
+    // Widgets 与 SwiftUI 的专属私有初始化
+    id ret = %orig(newDesc, getScaledSize(size), scaling, getScaledSize(pointScaling), getScaledSize(maxScaling), ib, weight);
     isHooking = NO;
     
     return ret ? ret : %orig;
@@ -221,10 +223,10 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
 
 
 // ---------------------------------------------------------
-// 包装重定向区 (这些负责把请求重定向给上面的核心方法，绝不加锁)
+// 包装重定向区 (负责重定向给上面的核心方法，绝不加锁)
 // ---------------------------------------------------------
 
-// 【键盘漏覆盖修复 3】强行拦截键盘的私有底层调用！
+// 【键盘专用拦截】直接斩断原版私有调用，强行注入！
 + (id)_keyboardFontOfSize:(double)size weight:(double)weight {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     if (isHooking) return %orig;
