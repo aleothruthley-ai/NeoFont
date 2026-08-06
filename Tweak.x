@@ -10,6 +10,7 @@
 // ================= [私有 API 声明] =================
 @interface UIFont (NeoFontPrivate)
 + (void)_evictAllItemsFromFontAndFontDescriptorCaches;
+- (BOOL)isSystemFont;
 @end
 
 // ================= [全局配置变量] =================
@@ -20,7 +21,7 @@ static CGFloat g_fontSizeScale = 1.0;
 static NSArray *g_blacklist = nil;
 static BOOL g_isSpringBoard = NO;
 
-// ================= [危险队列判断（只拦真正危险的，绝不拦 main-thread）] =================
+// ================= [危险队列判断] =================
 static BOOL isDangerousIconQueue() {
     if (!g_isSpringBoard) return NO;
     
@@ -75,7 +76,7 @@ static BOOL isBoldRequest(NSString *fontName, CGFloat weight) {
 
 static CGFloat getScaledSize(CGFloat originalSize) {
     if (originalSize <= 0) return originalSize;
-    // SpringBoard 强制 1.0 保证文件夹不卡，其他进程正常缩放
+    // SpringBoard 强制 1.0 保证文件夹不卡
     if (g_isSpringBoard) return originalSize;
     return originalSize * g_fontSizeScale;
 }
@@ -101,6 +102,19 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
 
 static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     if (!g_enabled || !origFont) return origFont;
+    
+    // 只替换系统字体，避免破坏第三方/自定义字体和富文本
+    if ([origFont respondsToSelector:@selector(isSystemFont)] && ![origFont isSystemFont]) {
+        // 额外检查常见系统字体前缀
+        NSString *name = origFont.fontName ?: @"";
+        if (![name hasPrefix:@"."] && 
+            ![name hasPrefix:@"SF"] && 
+            ![name hasPrefix:@"Helvetica"] && 
+            ![name hasPrefix:@"UICTFont"]) {
+            return origFont;
+        }
+    }
+    
     if (shouldBypassFont(origFont.fontName)) return origFont;
     
     BOOL wantBold = (origFont.fontDescriptor.symbolicTraits & UIFontDescriptorTraitBold) != 0;
@@ -302,7 +316,7 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     return ret ? ret : %orig;
 }
 
-// ================= preferred 全家桶（根据头文件全部补全） =================
+// preferred 全家桶
 + (id)preferredFontForTextStyle:(UIFontTextStyle)style {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
@@ -401,7 +415,6 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     return replaceFontIfNeeded(%orig);
 }
 
-// 实例方法
 - (id)initWithName:(NSString *)name size:(double)size {
     if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(name)) return %orig;
     NSString *targetFont = isBoldRequest(name, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
@@ -414,16 +427,14 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     return replaceFontIfNeeded(%orig);
 }
 
-// 关键：统一缩放 fontWithSize:
 - (id)fontWithSize:(double)size {
-    UIFont *orig = %orig;
-    return replaceFontIfNeeded(orig);
+    return replaceFontIfNeeded(%orig);
 }
 
 %end
 
 
-// ================= 【最终拦截】打出来的字 + 键盘字母（不受危险队列限制） =================
+// ================= 【最终拦截】 =================
 %hook UILabel
 - (void)setFont:(UIFont *)font {
     if (!g_enabled) {
@@ -514,11 +525,13 @@ static void reloadPrefsAndFonts(CFNotificationCenterRef center, void *observer, 
     NSString *bundleID = [NSBundle mainBundle].bundleIdentifier;
     g_isSpringBoard = [bundleID isEqualToString:@"com.apple.springboard"];
     
+    // 关键：把 Spotlight 加入硬黑名单，彻底解决下拉搜索崩溃
     NSArray *hardcodedBlacklist = @[
         @"com.apple.calculator", 
         @"com.apple.photos.VideoConversionService",
         @"com.apple.springboard.SBRendererService",
-        @"com.apple.Search.Framework"
+        @"com.apple.Search.Framework",
+        @"com.apple.Spotlight"          // ← 新增，解决搜索进程重启
     ];
     if ([hardcodedBlacklist containsObject:bundleID]) return;
 
