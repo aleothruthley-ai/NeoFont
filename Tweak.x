@@ -7,6 +7,11 @@
 #define jbroot(path) path
 #endif
 
+// ================= [私有方法声明：解决编译报错] =================
+@interface UIFont (NeoFontPrivate)
++ (id)fontWithName:(NSString *)fontName size:(CGFloat)fontSize traits:(int)traits;
+@end
+
 // ================= [全局配置变量] =================
 static BOOL g_enabled = YES;
 static NSString *g_customFontName = nil;
@@ -15,7 +20,7 @@ static CGFloat g_fontSizeScale = 1.0;
 static NSArray *g_blacklist = nil;
 static BOOL g_isSpringBoard = NO;
 
-// 【核心防护】：C级线程局部变量。我们将只在核心 %orig 调用时加锁，彻底打破 CoreText 缺失字形的死循环崩溃！
+// 【核心防护】：C级线程局部变量。只在核心 %orig 调用时加锁，打破 CoreText 死循环！
 static __thread BOOL isHooking = NO;
 
 // ================= [高精度防崩：精准定位日历图标后台缓存溢出] =================
@@ -92,7 +97,7 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
 %hook UIFont
 
 // ---------------------------------------------------------
-// 核心源方法区 (这些方法内部调用 %orig，必须加 isHooking 防死锁)
+// 核心源方法区 (内部调用 %orig，必须加 isHooking 防死锁)
 // ---------------------------------------------------------
 + (id)fontWithName:(NSString *)fontName size:(CGFloat)fontSize {
     if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(fontName)) return %orig;
@@ -184,7 +189,7 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
 
 
 // ---------------------------------------------------------
-// 包装重定向区 (这些只负责把请求重定向给上面的核心方法，绝不能加锁)
+// 包装重定向区 (这些负责把请求重定向给上面的核心方法，绝不加锁)
 // ---------------------------------------------------------
 + (id)systemFontOfSize:(CGFloat)size {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
@@ -347,7 +352,6 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     if (isHooking) return %orig;
     
-    // 这里需特别获取一次 orig，所以单独短暂加锁
     isHooking = YES;
     UIFont *origFont = %orig;
     isHooking = NO;
