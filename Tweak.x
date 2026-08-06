@@ -23,34 +23,36 @@ static BOOL g_isSpringBoard = NO;
 // 【核心防护】：C级线程局部变量。只在核心 %orig 调用时加锁，打破 CoreText 死循环！
 static __thread BOOL isHooking = NO;
 
-// ================= [终极防崩：地毯式过滤 SpringBoard 高频危险渲染队列] =================
+// ================= [终极防崩：只拦截后台缓存队列，绝不误杀主线程可视 UI！] =================
 static BOOL isDangerousIconQueue() {
     if (!g_isSpringBoard) return NO;
+    
+    // 【核心精髓】：所有能在屏幕上看到的锁屏、小组件、UI 都是在主线程更新的。
+    // 我们直接放行主线程，不仅能 100% 保证覆盖率，还能避开所有后台并发的图标缓存崩溃！
+    if ([NSThread isMainThread]) return NO;
     
     const char *label = dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL);
     if (!label) return NO;
     
-    // 覆盖所有已知图标、文件夹、预缓存相关队列
+    // 拦截导致内存溢出和卡死的后台图片生成队列
     if (strstr(label, "Icon") ||
         strstr(label, "SBH") ||
         strstr(label, "Folder") ||
         strstr(label, "Precache") ||
         strstr(label, "ImageCache") ||
-        strstr(label, "IconImage") ||
         strstr(label, "LabelImage") ||
-        strstr(label, "com.apple.SpringBoard.icon") ||
-        strstr(label, "com.apple.SpringBoard.folder")) {
+        strstr(label, "com.apple.SpringBoard")) {
         return YES;
     }
     return NO;
 }
 
-// ================= [安全过滤逻辑：加速版] =================
+// ================= [安全过滤逻辑] =================
 static BOOL shouldBypassFont(NSString *fontName) {
     if (!fontName) return NO; 
     
-    // [性能极速优化] SpringBoard 下的大量系统级 UI 隐藏字体直接秒级放行，杜绝看门狗卡死！
-    if (g_isSpringBoard && [fontName hasPrefix:@"."]) return YES;
+    // 删除了上一个版本的 [fontName hasPrefix:@"."] 限制！
+    // 因为苹果的 .SFUI 等核心 UI 字体必须被替换！
     
     if ([fontName isEqualToString:g_customFontName] || [fontName isEqualToString:g_customBoldFontName]) return YES;
     
@@ -78,7 +80,7 @@ static CGFloat getScaledSize(CGFloat originalSize) {
     return originalSize * g_fontSizeScale;
 }
 
-// ================= [核心通用转换器：增加极速退出] =================
+// ================= [核心通用转换器] =================
 static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     if (!origDesc || isDangerousIconQueue()) return origDesc;
     
@@ -438,10 +440,7 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     g_customBoldFontName = prefs[@"CustomBoldFont"];
     g_fontSizeScale = prefs[@"FontScale"] ? [prefs[@"FontScale"] doubleValue] : 1.0;
     
-    // [性能优化] 强制关闭 SpringBoard 的字号缩放！防止图标和文件夹引擎因为位图 Buffer 溢出崩溃
-    if (g_isSpringBoard) {
-        g_fontSizeScale = 1.0; 
-    }
+    // [修复] 移除了 g_fontSizeScale = 1.0; 的强制重置，恢复用户设置的缩放体验！
     
     if (!g_customFontName || g_customFontName.length == 0) return;
 
