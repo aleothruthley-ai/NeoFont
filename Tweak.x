@@ -15,7 +15,6 @@
 static BOOL g_enabled = YES;
 static NSString *g_customFontName = nil;
 static NSString *g_customBoldFontName = nil;
-static CGFloat g_fontSizeScale = 1.0;
 static NSArray *g_blacklist = nil;
 static BOOL g_isSpringBoard = NO;
 
@@ -56,12 +55,6 @@ static BOOL isBoldRequest(NSString *fontName, CGFloat weight) {
            [lower containsString:@"black"] || [lower containsString:@"semibold"];
 }
 
-static CGFloat getScaledSize(CGFloat originalSize) {
-    if (originalSize <= 0) return originalSize;
-    if (g_isSpringBoard) return originalSize; // 文件夹稳定
-    return originalSize * g_fontSizeScale;
-}
-
 static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     if (!origDesc) return nil;
     NSString *reqName = origDesc.fontAttributes[@"UIFontDescriptorNameAttribute"] ?:
@@ -83,7 +76,6 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
 static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     if (!g_enabled || !origFont) return origFont;
 
-    // 只替换系统字体（A-Font 同思路，保证稳定）
     if ([origFont respondsToSelector:@selector(isSystemFont)] && ![origFont isSystemFont]) {
         NSString *name = origFont.fontName ?: @"";
         if (![name hasPrefix:@"."] && ![name hasPrefix:@"SF"] &&
@@ -99,7 +91,7 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     NSString *target = (wantBold && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     if (!target) return origFont;
 
-    UIFont *newFont = [UIFont fontWithName:target size:getScaledSize(origFont.pointSize)];
+    UIFont *newFont = [UIFont fontWithName:target size:origFont.pointSize];
     return newFont ?: origFont;
 }
 
@@ -121,7 +113,7 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(fontName)) return %orig;
     NSString *targetFont = isBoldRequest(fontName, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return %orig;
-    id ret = %orig(targetFont, getScaledSize(fontSize));
+    id ret = %orig(targetFont, fontSize);
     return ret ?: %orig;
 }
 
@@ -129,7 +121,7 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(fontName)) return %orig;
     NSString *targetFont = isBoldRequest(fontName, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return %orig;
-    id ret = %orig(targetFont, getScaledSize(fontSize), traits);
+    id ret = %orig(targetFont, fontSize, traits);
     return ret ?: %orig;
 }
 
@@ -137,7 +129,7 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(fontName)) return %orig;
     NSString *targetFont = isBoldRequest(fontName, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return %orig;
-    id ret = %orig(targetFont, getScaledSize(fontSize));
+    id ret = %orig(targetFont, fontSize);
     return ret ?: %orig;
 }
 
@@ -145,14 +137,14 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(name)) return %orig;
     NSString *targetFont = (traits & UIFontDescriptorTraitBold) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return %orig;
-    return [self fontWithName:targetFont size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:targetFont size:size] ?: %orig;
 }
 
 + (UIFont *)fontWithDescriptor:(UIFontDescriptor *)descriptor size:(CGFloat)size {
     if (!g_enabled || isDangerousIconQueue() || !descriptor) return %orig;
     UIFontDescriptor *newDesc = getReplacedDescriptor(descriptor);
     CGFloat targetSize = (size > 0) ? size : descriptor.pointSize;
-    newDesc = [newDesc fontDescriptorWithSize:getScaledSize(targetSize)];
+    newDesc = [newDesc fontDescriptorWithSize:targetSize];
     id ret = %orig(newDesc, 0);
     return ret ?: %orig;
 }
@@ -160,112 +152,111 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
 + (id)_fontWithDescriptor:(id)descriptor size:(double)size textStyleForScaling:(id)scaling pointSizeForScaling:(double)pointScaling maximumPointSizeAfterScaling:(double)maxScaling forIB:(BOOL)ib legibilityWeight:(long long)weight {
     if (!g_enabled || isDangerousIconQueue() || !descriptor) return %orig;
     UIFontDescriptor *newDesc = getReplacedDescriptor(descriptor);
-    id ret = %orig(newDesc, getScaledSize(size), scaling, pointScaling, maxScaling, ib, weight);
+    id ret = %orig(newDesc, size, scaling, pointScaling, maxScaling, ib, weight);
     return ret ?: %orig;
 }
 
 + (id)systemFontOfSize:(CGFloat)size {
     if (!g_enabled || isDangerousIconQueue() || !g_customFontName) return %orig;
-    return [self fontWithName:g_customFontName size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:g_customFontName size:size] ?: %orig;
 }
 
 + (id)systemFontOfSize:(double)size traits:(int)traits {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     NSString *targetFont = (traits & UIFontDescriptorTraitBold) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return %orig;
-    return [self fontWithName:targetFont size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:targetFont size:size] ?: %orig;
 }
 
 + (id)systemFontOfSize:(CGFloat)size weight:(CGFloat)weight {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return %orig;
-    return [self fontWithName:targetFont size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:targetFont size:size] ?: %orig;
 }
 
 + (id)systemFontOfSize:(CGFloat)size weight:(CGFloat)weight design:(id)design {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return %orig;
-    return [self fontWithName:targetFont size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:targetFont size:size] ?: %orig;
 }
 
 + (id)systemFontOfSize:(CGFloat)size weight:(CGFloat)weight width:(CGFloat)width {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return %orig;
-    return [self fontWithName:targetFont size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:targetFont size:size] ?: %orig;
 }
 
 + (id)_systemFontsOfSize:(double)size traits:(int)traits {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     NSString *targetFont = (traits & UIFontDescriptorTraitBold) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return %orig;
-    return [self fontWithName:targetFont size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:targetFont size:size] ?: %orig;
 }
 
 + (id)_systemFontOfSize:(double)size width:(id)width traits:(int)traits {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     NSString *targetFont = (traits & UIFontDescriptorTraitBold) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return %orig;
-    return [self fontWithName:targetFont size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:targetFont size:size] ?: %orig;
 }
 
 + (id)boldSystemFontOfSize:(CGFloat)size {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     NSString *targetFont = g_customBoldFontName ?: g_customFontName;
     if (!targetFont) return %orig;
-    return [self fontWithName:targetFont size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:targetFont size:size] ?: %orig;
 }
 
 + (id)italicSystemFontOfSize:(CGFloat)size {
     if (!g_enabled || isDangerousIconQueue() || !g_customFontName) return %orig;
-    return [self fontWithName:g_customFontName size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:g_customFontName size:size] ?: %orig;
 }
 
 + (id)monospacedDigitSystemFontOfSize:(double)size weight:(double)weight {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return %orig;
-    return [self fontWithName:targetFont size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:targetFont size:size] ?: %orig;
 }
 
 + (id)monospacedSystemFontOfSize:(double)size weight:(double)weight {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return %orig;
-    return [self fontWithName:targetFont size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:targetFont size:size] ?: %orig;
 }
 
 + (id)userFontOfSize:(double)size {
     if (!g_enabled || isDangerousIconQueue() || !g_customFontName) return %orig;
-    return [self fontWithName:g_customFontName size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:g_customFontName size:size] ?: %orig;
 }
 
 + (id)_lightSystemFontOfSize:(double)size {
     if (!g_enabled || isDangerousIconQueue() || !g_customFontName) return %orig;
-    return [self fontWithName:g_customFontName size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:g_customFontName size:size] ?: %orig;
 }
 + (id)_thinSystemFontOfSize:(double)size {
     if (!g_enabled || isDangerousIconQueue() || !g_customFontName) return %orig;
-    return [self fontWithName:g_customFontName size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:g_customFontName size:size] ?: %orig;
 }
 + (id)_ultraLightSystemFontOfSize:(double)size {
     if (!g_enabled || isDangerousIconQueue() || !g_customFontName) return %orig;
-    return [self fontWithName:g_customFontName size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:g_customFontName size:size] ?: %orig;
 }
 + (id)_opticalSystemFontOfSize:(double)size {
     if (!g_enabled || isDangerousIconQueue() || !g_customFontName) return %orig;
-    return [self fontWithName:g_customFontName size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:g_customFontName size:size] ?: %orig;
 }
 + (id)_opticalBoldSystemFontOfSize:(double)size {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     NSString *targetFont = g_customBoldFontName ?: g_customFontName;
     if (!targetFont) return %orig;
-    return [self fontWithName:targetFont size:getScaledSize(size)] ?: %orig;
+    return [self fontWithName:targetFont size:size] ?: %orig;
 }
 
-// preferred 全家桶（头文件完整覆盖，天气大字体关键）
 + (id)preferredFontForTextStyle:(UIFontTextStyle)style {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
@@ -374,7 +365,7 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(name)) return %orig;
     NSString *targetFont = isBoldRequest(name, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return %orig;
-    id ret = %orig(targetFont, getScaledSize(size));
+    id ret = %orig(targetFont, size);
     return ret ?: %orig;
 }
 
@@ -388,7 +379,6 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
 
 %end
 
-// 只拦截输入控件（A-Font 移除了 UILabel，我们只留必要的）
 %hook UITextField
 - (void)setFont:(UIFont *)font {
     if (!g_enabled) { %orig; return; }
@@ -435,7 +425,6 @@ static void reloadPrefsAndFonts(CFNotificationCenterRef center, void *observer, 
     g_enabled = prefs[@"Enabled"] ? [prefs[@"Enabled"] boolValue] : YES;
     g_customFontName = prefs[@"CustomFont"];
     g_customBoldFontName = prefs[@"CustomBoldFont"];
-    g_fontSizeScale = prefs[@"FontScale"] ? [prefs[@"FontScale"] doubleValue] : 1.0;
     g_blacklist = prefs[@"Blacklist"] ?: @[];
 
     if (!g_enabled || !g_customFontName || g_customFontName.length == 0) return;
@@ -476,7 +465,6 @@ static void reloadPrefsAndFonts(CFNotificationCenterRef center, void *observer, 
 
     g_customFontName = prefs[@"CustomFont"];
     g_customBoldFontName = prefs[@"CustomBoldFont"];
-    g_fontSizeScale = prefs[@"FontScale"] ? [prefs[@"FontScale"] doubleValue] : 1.0;
 
     if (!g_customFontName || g_customFontName.length == 0) return;
 
