@@ -5,71 +5,89 @@
     <key>items</key>
     <array>
         <dict>
-            <key>cell</key> <string>PSGroupCell</string>
-            <key>label</key> <string>全局开关</string>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>全局开关</string>
         </dict>
         <dict>
-            <key>cell</key> <string>PSSwitchCell</string>
-            <key>default</key> <true/>
-            <key>defaults</key> <string>com.iosdump.neofont</string>
-            <key>key</key> <string>Enabled</string>
-            <key>label</key> <string>启用 NeoFont</string>
-        </dict>
-        
-        <dict>
-            <key>cell</key> <string>PSGroupCell</string>
-            <key>label</key> <string>字体管理</string>
-            <key>footerText</key> <string>支持导入 .ttf / .otf / .ttc 单文件或包含这些文件的 .zip 压缩包。导入后系统会自动解析真实的字体名。</string>
-        </dict>
-        <dict>
-            <key>cell</key> <string>PSButtonCell</string>
-            <key>label</key> <string>📥 从文件导入字体 (ZIP/TTF/OTF)</string>
-            <key>action</key> <string>importFontAction</string>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>default</key>
+            <true/>
+            <key>defaults</key>
+            <string>com.iosdump.neofont</string>
+            <key>key</key>
+            <string>Enabled</string>
+            <key>label</key>
+            <string>启用 NeoFont</string>
         </dict>
         
         <dict>
-            <key>cell</key> <string>PSGroupCell</string>
-            <key>label</key> <string>字体配置</string>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>字体管理</string>
+            <key>footerText</key>
+            <string>支持导入 .ttf / .otf / .ttc 单文件</string>
         </dict>
         <dict>
-            <key>cell</key> <string>PSLinkListCell</string>
-            <key>detail</key> <string>PSListItemsController</string>
-            <key>default</key> <string></string>
-            <key>defaults</key> <string>com.iosdump.neofont</string>
-            <key>key</key> <string>CustomFont</string>
-            <key>label</key> <string>常规字体 (Regular)</string>
-        </dict>
-        <dict>
-            <key>cell</key> <string>PSLinkListCell</string>
-            <key>detail</key> <string>PSListItemsController</string>
-            <key>default</key> <string></string>
-            <key>defaults</key> <string>com.iosdump.neofont</string>
-            <key>key</key> <string>CustomBoldFont</string>
-            <key>label</key> <string>粗体变体 (Bold)</string>
+            <key>cell</key>
+            <string>PSButtonCell</string>
+            <key>label</key>
+            <string>文件导入字体</string>
+            <key>action</key>
+            <string>importFontAction</string>
         </dict>
         
         <dict>
-            <key>cell</key> <string>PSGroupCell</string>
-            <key>label</key> <string>字体大小缩放比例 (默认 1.0)</string>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>字体配置</string>
         </dict>
         <dict>
-            <key>cell</key> <string>PSSliderCell</string>
-            <key>default</key> <real>1.0</real>
-            <key>defaults</key> <string>com.iosdump.neofont</string>
-            <key>key</key> <string>FontScale</string>
-            <key>min</key> <real>0.7</real>
-            <key>max</key> <real>1.5</real>
-            <key>showValue</key> <true/>
+            <key>cell</key>
+            <string>PSLinkListCell</string>
+            <key>detail</key>
+            <string>PSListItemsController</string>
+            <key>default</key>
+            <string></string>
+            <key>defaults</key>
+            <string>com.iosdump.neofont</string>
+            <key>key</key>
+            <string>CustomFont</string>
+            <key>label</key>
+            <string>常规字体</string>
         </dict>
-
         <dict>
-            <key>cell</key> <string>PSGroupCell</string>
-            <key>label</key> <string>应用操作</string>
+            <key>cell</key>
+            <string>PSLinkListCell</string>
+            <key>detail</key>
+            <string>PSListItemsController</string>
+            <key>default</key>
+            <string></string>
+            <key>defaults</key>
+            <string>com.iosdump.neofont</string>
+            <key>key</key>
+            <string>CustomBoldFont</string>
+            <key>label</key>
+            <string>粗体变体</string>
+        </dict>
+        
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>应用操作</string>
         </dict>
         <dict>
-            <key>cell</key> <string>PSButtonCell</string>
-            <key>label</key> <string>🔄 注销设备 (Respring) 生效</string>
-            <key>action</key> <string>respringAction</string>
+            <key>cell</key>
+            <string>PSButtonCell</string>
+            <key>label</key>
+            <string>点我生效</string>
+            <key>action</key>
+            <string>respringAction</string>
         </dict>
     </array>
     <key>title</key>
