@@ -11,9 +11,7 @@
 
 extern char **environ;
 
-static NSString * GetPrefPath() {
-    return jbroot(@"/var/mobile/Library/Preferences/com.iosdump.neofont.plist");
-}
+// [修复] 删除了未使用的 GetPrefPath 函数，避免被 -Werror 拦截报错
 
 static NSString * GetFontDirPath() {
     NSString *path = jbroot(@"/var/mobile/Library/NeoFont");
@@ -103,7 +101,7 @@ static NSString * GetFontDirPath() {
         for (PSSpecifier *spec in specs) {
             NSString *key = [spec propertyForKey:@"key"];
             if ([key isEqualToString:@"CustomFont"] || [key isEqualToString:@"CustomBoldFont"]) {
-                // [修复1] 替换为底层的 Property 注入方法，避开 setValues:titles: 头文件缺失问题
+                // 替换为底层的 Property 注入方法，避开 setValues:titles: 头文件缺失问题
                 [spec setProperty:fontValues forKey:@"validValues"];
                 [spec setProperty:fontNames forKey:@"validTitles"];
             }
@@ -117,7 +115,7 @@ static NSString * GetFontDirPath() {
 - (void)importFontAction {
     NSArray *types = @[@"public.font", @"public.truetype-ttf-font", @"public.opentype-font", @"public.zip-archive"];
     
-    // [修复2] 使用 Clang 指令屏蔽 iOS 14.0+ 引入的 API 废弃报错，保持兼容性
+    // 使用 Clang 指令屏蔽 iOS 14.0+ 引入的 API 废弃报错，保持兼容性
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:types inMode:UIDocumentPickerModeImport];
