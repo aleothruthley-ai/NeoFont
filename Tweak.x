@@ -75,14 +75,14 @@ static CGFloat getScaledSize(CGFloat originalSize) {
     return [self fontWithName:targetFont size:getScaledSize(fontSize)];
 }
 
-// [新增: iOS 16+ 核心适配]
+// [核心: iOS 16+ 适配]
 + (id)systemFontOfSize:(CGFloat)fontSize weight:(CGFloat)weight width:(CGFloat)width {
     if (!g_enabled) return %orig;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     return [self fontWithName:targetFont size:getScaledSize(fontSize)];
 }
 
-// [新增: iOS 16+ 私有 API 拦截]
+// [核心: iOS 16+ 私有 API 拦截]
 + (id)_systemFontOfSize:(double)fontSize width:(id)width traits:(int)traits {
     if (!g_enabled) return %orig;
     return [self fontWithName:g_customFontName size:getScaledSize(fontSize)];
@@ -99,21 +99,101 @@ static CGFloat getScaledSize(CGFloat originalSize) {
     return [self fontWithName:g_customFontName size:getScaledSize(fontSize)];
 }
 
-+ (id)fontWithDescriptor:(UIFontDescriptor *)descriptor size:(CGFloat)size {
-    if (!g_enabled) return %orig;
+// ================= [修复: Descriptor 拦截强化] =================
++ (UIFont *)fontWithDescriptor:(UIFontDescriptor *)descriptor size:(CGFloat)size {
+    if (!g_enabled || !descriptor) return %orig;
     
-    NSString *reqName = descriptor.fontAttributes[@"NSFontNameAttribute"];
-    if (shouldBypassFont(reqName)) return %orig;
+    // 更安全地取名字，防止 nil 崩溃
+    NSString *reqName = descriptor.fontAttributes[@"UIFontDescriptorNameAttribute"] 
+                     ?: descriptor.fontAttributes[@"NSFontNameAttribute"];
     
-    CGFloat targetSize = size > 0 ? size : descriptor.pointSize;
-    NSString *targetFont = (descriptor.symbolicTraits & UIFontDescriptorTraitBold) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
+    // 【关键修复】即使没有名字（preferred 路径常见，直接是 nil），也不要轻易 bypass，照样进行替换！
+    if (reqName && shouldBypassFont(reqName)) return %orig;
+    
+    CGFloat targetSize = (size > 0) ? size : descriptor.pointSize;
+    BOOL wantBold = (descriptor.symbolicTraits & UIFontDescriptorTraitBold) != 0;
+    NSString *targetFont = (wantBold && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
+    
+    if (!targetFont) return %orig;
     
     UIFontDescriptor *newDesc = [UIFontDescriptor fontDescriptorWithName:targetFont size:getScaledSize(targetSize)];
+    
+    // 尽量保留原有系统排版特性
+    if (descriptor.symbolicTraits) {
+        newDesc = [newDesc fontDescriptorWithSymbolicTraits:descriptor.symbolicTraits];
+    }
+    
     return %orig(newDesc, 0);
 }
 
-%end
+// ================= [修复: Dynamic Type (preferred) 动态类型全家桶] =================
++ (id)preferredFontForTextStyle:(UIFontTextStyle)style {
+    if (!g_enabled) return %orig;
+    UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
+    return [self fontWithDescriptor:desc size:0];
+}
 
++ (id)preferredFontForTextStyle:(UIFontTextStyle)style compatibleWithTraitCollection:(UITraitCollection *)traitCollection {
+    if (!g_enabled) return %orig;
+    UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style compatibleWithTraitCollection:traitCollection];
+    return [self fontWithDescriptor:desc size:0];
+}
+
++ (id)ib_preferredFontForTextStyle:(UIFontTextStyle)style {
+    if (!g_enabled) return %orig;
+    UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
+    return [self fontWithDescriptor:desc size:0];
+}
+
++ (id)defaultFontForTextStyle:(UIFontTextStyle)style {
+    if (!g_enabled) return %orig;
+    UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
+    return [self fontWithDescriptor:desc size:0];
+}
+
+// 拦截系统底层私有的 _preferredFont 变体 (iOS 14-17均存在)
++ (id)_preferredFontForTextStyle:(id)style weight:(double)weight {
+    if (!g_enabled) return %orig;
+    UIFont *origFont = %orig;
+    if (!origFont) return origFont;
+    NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
+    return [self fontWithName:targetFont size:getScaledSize(origFont.pointSize)];
+}
+
++ (id)_preferredFontForTextStyle:(id)style design:(id)design weight:(double)weight {
+    if (!g_enabled) return %orig;
+    UIFont *origFont = %orig;
+    if (!origFont) return origFont;
+    NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
+    return [self fontWithName:targetFont size:getScaledSize(origFont.pointSize)];
+}
+
+// ================= [修复: 等宽字体 (Monospaced)] =================
++ (id)monospacedDigitSystemFontOfSize:(double)size weight:(double)weight {
+    if (!g_enabled) return %orig;
+    NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
+    return [self fontWithName:targetFont size:getScaledSize(size)];
+}
+
++ (id)monospacedSystemFontOfSize:(double)size weight:(double)weight {
+    if (!g_enabled) return %orig;
+    NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
+    return [self fontWithName:targetFont size:getScaledSize(size)];
+}
+
+// ================= [修复: Storyboard / XIB 归档反序列化] =================
+- (id)initWithCoder:(NSCoder *)coder {
+    UIFont *font = %orig;
+    if (!g_enabled || !font) return font;
+    
+    BOOL wantBold = (font.fontDescriptor.symbolicTraits & UIFontDescriptorTraitBold) != 0;
+    NSString *target = (wantBold && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
+    
+    if (!target || shouldBypassFont(font.fontName)) return font;
+    return [UIFont fontWithName:target size:getScaledSize(font.pointSize)];
+}
+
+%end
 
 // ================= [初始化与内存注册] =================
 %ctor {
