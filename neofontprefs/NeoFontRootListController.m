@@ -11,7 +11,10 @@
 
 extern char **environ;
 
-// [修复] 删除了未使用的 GetPrefPath 函数，避免被 -Werror 拦截报错
+// [修复 1]: 显式声明系统私有 API，既能通过严苛的编译，又能完美配置数组，彻底解决点击闪退！
+@interface PSSpecifier (NeoFontPrivate)
+- (void)setValues:(NSArray *)values titles:(NSArray *)titles;
+@end
 
 static NSString * GetFontDirPath() {
     NSString *path = jbroot(@"/var/mobile/Library/NeoFont");
@@ -101,9 +104,8 @@ static NSString * GetFontDirPath() {
         for (PSSpecifier *spec in specs) {
             NSString *key = [spec propertyForKey:@"key"];
             if ([key isEqualToString:@"CustomFont"] || [key isEqualToString:@"CustomBoldFont"]) {
-                // 替换为底层的 Property 注入方法，避开 setValues:titles: 头文件缺失问题
-                [spec setProperty:fontValues forKey:@"validValues"];
-                [spec setProperty:fontNames forKey:@"validTitles"];
+                // 安全调用私有 API 绑定数据源
+                [spec setValues:fontValues titles:fontNames];
             }
         }
         _specifiers = [specs copy];
@@ -115,7 +117,6 @@ static NSString * GetFontDirPath() {
 - (void)importFontAction {
     NSArray *types = @[@"public.font", @"public.truetype-ttf-font", @"public.opentype-font", @"public.zip-archive"];
     
-    // 使用 Clang 指令屏蔽 iOS 14.0+ 引入的 API 废弃报错，保持兼容性
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:types inMode:UIDocumentPickerModeImport];
@@ -132,40 +133,57 @@ static NSString * GetFontDirPath() {
     BOOL needReload = NO;
     
     for (NSURL *url in urls) {
+        // [修复 2]: 必须开启安全访问权限，否则系统直接拦截读取请求！
+        BOOL isScoped = [url startAccessingSecurityScopedResource];
         NSString *ext = [url.pathExtension lowercaseString];
         
+        // 字体直装支持 (必须用 Copy 而不能用 Move，因为原文件可能是只读沙盒权限)
+        if ([ext isEqualToString:@"ttf"] || [ext isEqualToString:@"otf"] || [ext isEqualToString:@"ttc"]) {
+            NSString *destPath = [destDir stringByAppendingPathComponent:[url lastPathComponent]];
+            [fm removeItemAtPath:destPath error:nil];
+            if ([fm copyItemAtURL:url toURL:[NSURL fileURLWithPath:destPath] error:nil]) {
+                needReload = YES;
+            }
+        }
         // ZIP 解压支持 (利用 iOS 底层 unzip 命令)
-        if ([ext isEqualToString:@"zip"]) {
+        else if ([ext isEqualToString:@"zip"]) {
             NSString *tempDir = [NSTemporaryDirectory() stringByAppendingPathComponent:[[NSUUID UUID] UUIDString]];
             [fm createDirectoryAtPath:tempDir withIntermediateDirectories:YES attributes:nil error:nil];
             
-            pid_t pid;
-            const char *argv[] = {"unzip", "-o", [[url path] UTF8String], "-d", [tempDir UTF8String], NULL};
-            int status = posix_spawn(&pid, "/usr/bin/unzip", NULL, NULL, (char* const*)argv, environ);
-            
-            if (status == 0) {
-                waitpid(pid, &status, 0);
-                // 遍历解压出的目录寻找字体文件
-                NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:tempDir];
-                for (NSString *subPath in enumerator) {
-                    if ([subPath hasSuffix:@".ttf"] || [subPath hasSuffix:@".otf"] || [subPath hasSuffix:@".ttc"]) {
-                        NSString *fullSubPath = [tempDir stringByAppendingPathComponent:subPath];
-                        NSString *finalDest = [destDir stringByAppendingPathComponent:[subPath lastPathComponent]];
-                        [fm removeItemAtPath:finalDest error:nil]; // 覆盖旧文件
-                        [fm moveItemAtPath:fullSubPath toPath:finalDest error:nil];
-                        needReload = YES;
+            // 核心修复：必须把安全沙盒内的 ZIP 复制到我们自己App的临时目录下，外部的 unzip 子进程才有权限读取！
+            NSString *tempZipPath = [tempDir stringByAppendingPathComponent:@"temp.zip"];
+            if ([fm copyItemAtURL:url toURL:[NSURL fileURLWithPath:tempZipPath] error:nil]) {
+                
+                pid_t pid;
+                NSString *unzipPath = jbroot(@"/usr/bin/unzip");
+                const char *argv[] = {"unzip", "-o", [tempZipPath UTF8String], "-d", [tempDir UTF8String], NULL};
+                int status = posix_spawn(&pid, [unzipPath UTF8String], NULL, NULL, (char* const*)argv, environ);
+                
+                if (status == 0) {
+                    waitpid(pid, &status, 0); // 等待解压完成
+                    
+                    // 遍历解压出的目录寻找字体文件
+                    NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:tempDir];
+                    for (NSString *subPath in enumerator) {
+                        NSString *subExt = [subPath.pathExtension lowercaseString];
+                        if ([subExt isEqualToString:@"ttf"] || [subExt isEqualToString:@"otf"] || [subExt isEqualToString:@"ttc"]) {
+                            NSString *fullSubPath = [tempDir stringByAppendingPathComponent:subPath];
+                            NSString *finalDest = [destDir stringByAppendingPathComponent:[subPath lastPathComponent]];
+                            
+                            [fm removeItemAtPath:finalDest error:nil]; // 覆盖旧文件
+                            if ([fm moveItemAtPath:fullSubPath toPath:finalDest error:nil]) {
+                                needReload = YES;
+                            }
+                        }
                     }
                 }
             }
             [fm removeItemAtPath:tempDir error:nil]; // 清理临时目录
-        } 
-        // 字体直装支持
-        else if ([ext isEqualToString:@"ttf"] || [ext isEqualToString:@"otf"] || [ext isEqualToString:@"ttc"]) {
-            NSString *destPath = [destDir stringByAppendingPathComponent:[url lastPathComponent]];
-            [fm removeItemAtPath:destPath error:nil];
-            if ([fm moveItemAtURL:url toURL:[NSURL fileURLWithPath:destPath] error:nil]) {
-                needReload = YES;
-            }
+        }
+        
+        // 务必关闭安全权限
+        if (isScoped) {
+            [url stopAccessingSecurityScopedResource];
         }
     }
     
