@@ -113,6 +113,16 @@ static NSString * GetFontDirPath() {
     return _specifiers;
 }
 
+// 当用户修改任何偏好时，立刻通知 Tweak 热更新
+- (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
+    [super setPreferenceValue:value specifier:specifier];
+    
+    // 发送热更新通知，让所有进程立刻重新注册字体 + 清缓存
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         CFSTR("com.iosdump.neofont.prefsChanged"),
+                                         NULL, NULL, true);
+}
+
 // ================= [文件导入核心逻辑 (支持 ZIP/TTF/OTF/TTC)] =================
 - (void)importFontAction {
     NSArray *types = @[@"public.font", @"public.truetype-ttf-font", @"public.opentype-font", @"public.zip-archive"];
@@ -185,7 +195,14 @@ static NSString * GetFontDirPath() {
     }
     
     if (needReload) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导入成功" message:@"字体已导入并解析，请在列表中选择并注销设备生效。" preferredStyle:UIAlertControllerStyleAlert];
+        // 导入成功后立刻热更新
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                             CFSTR("com.iosdump.neofont.prefsChanged"),
+                                             NULL, NULL, true);
+        
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导入成功" 
+                                                                       message:@"字体已导入并热更新。大部分界面已立即生效，锁屏键盘/桌面文件夹建议注销一次彻底稳定。" 
+                                                                preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
             [self reloadSpecifiers]; // 刷新列表，显示新字体
         }]];
@@ -203,6 +220,11 @@ static NSString * GetFontDirPath() {
     if ([fm fileExistsAtPath:killallPath]) {
         const char *args1[] = {"killall", "-9", "widgetkitd", NULL};
         posix_spawn(&pid, [killallPath UTF8String], NULL, NULL, (char *const *)args1, environ);
+        waitpid(pid, NULL, 0);
+        
+        // 再杀一次可能的 Renderer
+        const char *args1b[] = {"killall", "-9", "WidgetRenderer", NULL};
+        posix_spawn(&pid, [killallPath UTF8String], NULL, NULL, (char *const *)args1b, environ);
         waitpid(pid, NULL, 0);
     }
     
