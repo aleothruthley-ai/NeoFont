@@ -85,7 +85,7 @@
             <key>cell</key>
             <string>PSButtonCell</string>
             <key>label</key>
-            <string>点我生效</string>
+            <string>点我生效(第一次不生效再重复点一次）</string>
             <key>action</key>
             <string>respringAction</string>
         </dict>
