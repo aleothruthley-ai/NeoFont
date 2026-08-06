@@ -1,1 +1,9 @@
-
+Package: com.iosdump.neofont
+Name: NeoFont
+Depends: mobilesubstrate, preferenceloader, unzip
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: 现代化的 iOS 14-17+ 纯内存级全局动态字体替换引擎，支持 TTF/OTF/TTC/ZIP 直装。
+Maintainer: iosdump
+Author: iosdump
+Section: Tweaks
