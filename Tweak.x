@@ -15,27 +15,32 @@ static CGFloat g_fontSizeScale = 1.0;
 static NSArray *g_blacklist = nil;
 static BOOL g_isSpringBoard = NO;
 
-// ================= [安全过滤逻辑] =================
-static BOOL shouldBypassFont(NSString *fontName, CGFloat size) {
+// ================= [高精度防崩：精准定位日历图标缓存溢出] =================
+// 仅拦截导致 CGDataProviderCreateWithData 内存溢出的图标后台渲染队列，解放桌面其他组件的缩放！
+static BOOL isDangerousIconQueue() {
+    if (!g_isSpringBoard) return NO;
+    const char *label = dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL);
+    if (!label) return NO;
+    // 拦截崩溃日志中的两个元凶队列
+    if (strstr(label, "SBHIconImageCache") || strstr(label, "IconPrecache")) {
+        return YES;
+    }
+    return NO;
+}
+
+// ================= [安全过滤逻辑 (解除封印版)] =================
+static BOOL shouldBypassFont(NSString *fontName) {
     if (!fontName) return YES;
     
     // 防止无限递归
     if ([fontName isEqualToString:g_customFontName] || [fontName isEqualToString:g_customBoldFontName]) return YES;
     
-    // 保护 iOS 16/17 锁屏时间 (CSProminentTimeView) 和巨型排版
-    // 凡是 SpringBoard 里字号超大(>=80)的，一律不碰，防止排版崩溃
-    if (g_isSpringBoard && size >= 80.0) {
-        return YES;
-    }
-    
-    // 过滤图标字体、Emoji及系统必须的特殊符号
+    // 仅保留最核心的 Emoji 和图标特征防错，移除对 clock/weather 和巨型字体的限制！
     NSString *lower = [fontName lowercaseString];
     if ([lower containsString:@"icon"] || 
         [lower containsString:@"emoji"] || 
         [lower containsString:@"glyph"] || 
         [lower containsString:@"assets"] || 
-        [lower containsString:@"weather"] || 
-        [lower containsString:@"clock"] || 
         [lower containsString:@"fontawesome"]) {
         return YES;
     }
@@ -51,21 +56,17 @@ static BOOL isBoldRequest(NSString *fontName, CGFloat weight) {
     return NO;
 }
 
-// 缩放计算 (SB 特权隔离)
+// 恢复全局字体缩放！(包括桌面小组件和名称)
 static CGFloat getScaledSize(CGFloat originalSize) {
     if (originalSize <= 0) return originalSize;
-    // 【核心修复】SpringBoard 下绝对禁止缩放！防止日历图标 Date 文字越界导致 CGDataProvider 崩溃
-    if (g_isSpringBoard) return originalSize;
     return originalSize * g_fontSizeScale;
 }
 
-// ================= [UIFont 核心 Hook 层 (绝对防御版)] =================
-// 每一个 Hook 必须包含 ret ? ret : %orig 的防 nil 兜底逻辑！
-
+// ================= [UIFont 核心 Hook 层 (全覆盖 + 绝对兜底)] =================
 %hook UIFont
 
 + (id)fontWithName:(NSString *)fontName size:(CGFloat)fontSize {
-    if (!g_enabled || shouldBypassFont(fontName, fontSize)) return %orig;
+    if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(fontName)) return %orig;
     
     NSString *targetFont = isBoldRequest(fontName, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     id ret = %orig(targetFont, getScaledSize(fontSize));
@@ -73,7 +74,7 @@ static CGFloat getScaledSize(CGFloat originalSize) {
 }
 
 + (id)fontWithName:(NSString *)fontName size:(CGFloat)fontSize traits:(int)traits {
-    if (!g_enabled || shouldBypassFont(fontName, fontSize)) return %orig;
+    if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(fontName)) return %orig;
     
     NSString *targetFont = isBoldRequest(fontName, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     id ret = %orig(targetFont, getScaledSize(fontSize), traits);
@@ -81,8 +82,7 @@ static CGFloat getScaledSize(CGFloat originalSize) {
 }
 
 + (id)systemFontOfSize:(CGFloat)fontSize weight:(CGFloat)weight {
-    if (!g_enabled) return %orig;
-    if (g_isSpringBoard && fontSize >= 80.0) return %orig;
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(fontSize)];
@@ -90,36 +90,31 @@ static CGFloat getScaledSize(CGFloat originalSize) {
 }
 
 + (id)systemFontOfSize:(CGFloat)fontSize weight:(CGFloat)weight design:(id)design {
-    if (!g_enabled) return %orig;
-    if (g_isSpringBoard && fontSize >= 80.0) return %orig;
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(fontSize)];
     return ret ? ret : %orig;
 }
 
-// [核心: iOS 16+ 适配]
+// [iOS 16+ 锁屏及控制中心核心适配]
 + (id)systemFontOfSize:(CGFloat)fontSize weight:(CGFloat)weight width:(CGFloat)width {
-    if (!g_enabled) return %orig;
-    if (g_isSpringBoard && fontSize >= 80.0) return %orig;
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(fontSize)];
     return ret ? ret : %orig;
 }
 
-// [核心: iOS 16+ 私有 API 拦截]
 + (id)_systemFontOfSize:(double)fontSize width:(id)width traits:(int)traits {
-    if (!g_enabled) return %orig;
-    if (g_isSpringBoard && fontSize >= 80.0) return %orig;
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     
     id ret = [self fontWithName:g_customFontName size:getScaledSize(fontSize)];
     return ret ? ret : %orig;
 }
 
 + (id)boldSystemFontOfSize:(CGFloat)fontSize {
-    if (!g_enabled) return %orig;
-    if (g_isSpringBoard && fontSize >= 80.0) return %orig;
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     
     NSString *targetFont = g_customBoldFontName ?: g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(fontSize)];
@@ -127,8 +122,7 @@ static CGFloat getScaledSize(CGFloat originalSize) {
 }
 
 + (id)italicSystemFontOfSize:(CGFloat)fontSize {
-    if (!g_enabled) return %orig;
-    if (g_isSpringBoard && fontSize >= 80.0) return %orig;
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     
     id ret = [self fontWithName:g_customFontName size:getScaledSize(fontSize)];
     return ret ? ret : %orig;
@@ -136,14 +130,14 @@ static CGFloat getScaledSize(CGFloat originalSize) {
 
 // ================= [修复: Descriptor 拦截强化] =================
 + (UIFont *)fontWithDescriptor:(UIFontDescriptor *)descriptor size:(CGFloat)size {
-    if (!g_enabled || !descriptor) return %orig;
+    if (!g_enabled || isDangerousIconQueue() || !descriptor) return %orig;
     
     NSString *reqName = descriptor.fontAttributes[@"UIFontDescriptorNameAttribute"] 
                      ?: descriptor.fontAttributes[@"NSFontNameAttribute"];
     
-    CGFloat targetSize = (size > 0) ? size : descriptor.pointSize;
-    if (reqName && shouldBypassFont(reqName, targetSize)) return %orig;
+    if (reqName && shouldBypassFont(reqName)) return %orig;
     
+    CGFloat targetSize = (size > 0) ? size : descriptor.pointSize;
     BOOL wantBold = (descriptor.symbolicTraits & UIFontDescriptorTraitBold) != 0;
     NSString *targetFont = (wantBold && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     
@@ -155,43 +149,42 @@ static CGFloat getScaledSize(CGFloat originalSize) {
     }
     
     id ret = %orig(newDesc, 0);
-    return ret ? ret : %orig;
+    return ret ? ret : %orig; // 绝对拦截 nil！
 }
 
-// ================= [修复: Dynamic Type (preferred) 动态类型全家桶] =================
+// ================= [Dynamic Type (preferred) 动态类型全家桶] =================
 + (id)preferredFontForTextStyle:(UIFontTextStyle)style {
-    if (!g_enabled) return %orig;
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
     id ret = [self fontWithDescriptor:desc size:0];
     return ret ? ret : %orig;
 }
 
 + (id)preferredFontForTextStyle:(UIFontTextStyle)style compatibleWithTraitCollection:(UITraitCollection *)traitCollection {
-    if (!g_enabled) return %orig;
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style compatibleWithTraitCollection:traitCollection];
     id ret = [self fontWithDescriptor:desc size:0];
     return ret ? ret : %orig;
 }
 
 + (id)ib_preferredFontForTextStyle:(UIFontTextStyle)style {
-    if (!g_enabled) return %orig;
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
     id ret = [self fontWithDescriptor:desc size:0];
     return ret ? ret : %orig;
 }
 
 + (id)defaultFontForTextStyle:(UIFontTextStyle)style {
-    if (!g_enabled) return %orig;
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
     id ret = [self fontWithDescriptor:desc size:0];
     return ret ? ret : %orig;
 }
 
 + (id)_preferredFontForTextStyle:(id)style weight:(double)weight {
-    if (!g_enabled) return %orig;
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     UIFont *origFont = %orig;
     if (!origFont) return origFont;
-    if (g_isSpringBoard && origFont.pointSize >= 80.0) return origFont;
     
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(origFont.pointSize)];
@@ -199,44 +192,39 @@ static CGFloat getScaledSize(CGFloat originalSize) {
 }
 
 + (id)_preferredFontForTextStyle:(id)style design:(id)design weight:(double)weight {
-    if (!g_enabled) return %orig;
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     UIFont *origFont = %orig;
     if (!origFont) return origFont;
-    if (g_isSpringBoard && origFont.pointSize >= 80.0) return origFont;
     
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(origFont.pointSize)];
     return ret ? ret : origFont;
 }
 
-// ================= [修复: 等宽字体 (Monospaced)] =================
+// ================= [等宽字体 (Monospaced)] =================
 + (id)monospacedDigitSystemFontOfSize:(double)size weight:(double)weight {
-    if (!g_enabled) return %orig;
-    if (g_isSpringBoard && size >= 80.0) return %orig;
-    
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(size)];
     return ret ? ret : %orig;
 }
 
 + (id)monospacedSystemFontOfSize:(double)size weight:(double)weight {
-    if (!g_enabled) return %orig;
-    if (g_isSpringBoard && size >= 80.0) return %orig;
-    
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(size)];
     return ret ? ret : %orig;
 }
 
-// ================= [修复: Storyboard / XIB 归档反序列化] =================
+// ================= [Storyboard / XIB 归档反序列化] =================
 - (id)initWithCoder:(NSCoder *)coder {
     UIFont *font = %orig;
-    if (!g_enabled || !font) return font;
+    if (!g_enabled || isDangerousIconQueue() || !font) return font;
     
     BOOL wantBold = (font.fontDescriptor.symbolicTraits & UIFontDescriptorTraitBold) != 0;
     NSString *target = (wantBold && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     
-    if (!target || shouldBypassFont(font.fontName, font.pointSize)) return font;
+    if (!target || shouldBypassFont(font.fontName)) return font;
     
     id ret = [UIFont fontWithName:target size:getScaledSize(font.pointSize)];
     return ret ? ret : font;
@@ -250,16 +238,14 @@ static CGFloat getScaledSize(CGFloat originalSize) {
     NSString *bundleID = [NSBundle mainBundle].bundleIdentifier;
     g_isSpringBoard = [bundleID isEqualToString:@"com.apple.springboard"];
     
-    // 黑名单与极高危进程过滤
     NSArray *hardcodedBlacklist = @[
-        @"com.apple.calculator", // 缩放 Bug
+        @"com.apple.calculator", 
         @"com.apple.photos.VideoConversionService",
         @"com.apple.springboard.SBRendererService",
         @"com.apple.Search.Framework"
     ];
     if ([hardcodedBlacklist containsObject:bundleID]) return;
 
-    // 读取配置
     NSString *prefPath = jbroot(@"/var/mobile/Library/Preferences/com.iosdump.neofont.plist");
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:prefPath];
     
@@ -267,7 +253,7 @@ static CGFloat getScaledSize(CGFloat originalSize) {
     if (!g_enabled) return;
 
     g_blacklist = prefs[@"Blacklist"] ?: @[];
-    if ([g_blacklist containsObject:bundleID]) return; // 用户黑名单放行
+    if ([g_blacklist containsObject:bundleID]) return;
 
     g_customFontName = prefs[@"CustomFont"];
     g_customBoldFontName = prefs[@"CustomBoldFont"];
@@ -275,7 +261,6 @@ static CGFloat getScaledSize(CGFloat originalSize) {
     
     if (!g_customFontName || g_customFontName.length == 0) return;
 
-    // --- 核心：CoreText 内存动态注册字体 ---
     NSString *fontDir = jbroot(@"/var/mobile/Library/NeoFont");
     NSFileManager *fm = [NSFileManager defaultManager];
     if ([fm fileExistsAtPath:fontDir]) {
@@ -286,7 +271,6 @@ static CGFloat getScaledSize(CGFloat originalSize) {
                 NSURL *fontURL = [NSURL fileURLWithPath:fullPath];
                 
                 CFErrorRef error;
-                // 先反注册以防缓存冲突，再注册至 Process 级作用域
                 CTFontManagerUnregisterFontsForURL((__bridge CFURLRef)fontURL, kCTFontManagerScopeProcess, nil);
                 CTFontManagerRegisterFontsForURL((__bridge CFURLRef)fontURL, kCTFontManagerScopeProcess, &error);
             }
