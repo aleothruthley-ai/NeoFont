@@ -20,14 +20,13 @@ static CGFloat g_fontSizeScale = 1.0;
 static NSArray *g_blacklist = nil;
 static BOOL g_isSpringBoard = NO;
 
-// ================= [危险队列判断（只拦真正危险的，绝不能拦 main-thread）] =================
+// ================= [危险队列判断（只拦真正危险的，绝不拦 main-thread）] =================
 static BOOL isDangerousIconQueue() {
     if (!g_isSpringBoard) return NO;
     
     const char *label = dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL);
     if (!label) return NO;
     
-    // 只拦截已知会导致文件夹卡死的队列
     if (strstr(label, "SBHIconImageCache") ||
         strstr(label, "IconPrecache") ||
         strstr(label, "IconImage") ||
@@ -76,7 +75,7 @@ static BOOL isBoldRequest(NSString *fontName, CGFloat weight) {
 
 static CGFloat getScaledSize(CGFloat originalSize) {
     if (originalSize <= 0) return originalSize;
-    // SpringBoard 强制 scale = 1.0，降低 metrics 差异，防止文件夹卡死
+    // SpringBoard 强制 1.0 保证文件夹不卡，其他进程正常缩放
     if (g_isSpringBoard) return originalSize;
     return originalSize * g_fontSizeScale;
 }
@@ -303,7 +302,7 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     return ret ? ret : %orig;
 }
 
-// preferred 全家桶
+// ================= preferred 全家桶（根据头文件全部补全） =================
 + (id)preferredFontForTextStyle:(UIFontTextStyle)style {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
@@ -362,6 +361,47 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     return replaceFontIfNeeded(%orig);
 }
 
++ (id)_preferredFontForTextStyle:(id)style design:(id)design variant:(long long)variant maximumContentSizeCategory:(id)category compatibleWithTraitCollection:(id)collection {
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    return replaceFontIfNeeded(%orig);
+}
+
++ (id)_preferredFontForTextStyle:(id)style design:(id)design variant:(long long)variant maximumContentSizeCategory:(id)category compatibleWithTraitCollection:(id)collection pointSize:(double)size pointSizeForScaling:(double)scaling {
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    return replaceFontIfNeeded(%orig);
+}
+
++ (id)_preferredFontForTextStyle:(id)style design:(id)design weight:(id)weight symbolicTraits:(unsigned int)traits maximumContentSizeCategory:(id)category compatibleWithTraitCollection:(id)collection pointSize:(double)size pointSizeForScaling:(double)scaling {
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    return replaceFontIfNeeded(%orig);
+}
+
++ (id)_preferredFontForTextStyle:(id)style maximumContentSizeCategory:(id)category {
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    return replaceFontIfNeeded(%orig);
+}
+
++ (id)_preferredFontForTextStyle:(id)style maximumContentSizeCategory:(id)category compatibleWithTraitCollection:(id)collection {
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    return replaceFontIfNeeded(%orig);
+}
+
++ (id)_preferredFontForTextStyle:(id)style maximumPointSize:(double)size compatibleWithTraitCollection:(id)collection {
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    return replaceFontIfNeeded(%orig);
+}
+
++ (id)_preferredFontForTextStyle:(id)style variant:(long long)variant {
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    return replaceFontIfNeeded(%orig);
+}
+
++ (id)_preferredFontForTextStyle:(id)style variant:(long long)variant maximumContentSizeCategory:(id)category {
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    return replaceFontIfNeeded(%orig);
+}
+
+// 实例方法
 - (id)initWithName:(NSString *)name size:(double)size {
     if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(name)) return %orig;
     NSString *targetFont = isBoldRequest(name, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
@@ -372,6 +412,12 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
 
 - (id)initWithCoder:(NSCoder *)coder {
     return replaceFontIfNeeded(%orig);
+}
+
+// 关键：统一缩放 fontWithSize:
+- (id)fontWithSize:(double)size {
+    UIFont *orig = %orig;
+    return replaceFontIfNeeded(orig);
 }
 
 %end
