@@ -15,6 +15,9 @@ static CGFloat g_fontSizeScale = 1.0;
 static NSArray *g_blacklist = nil;
 static BOOL g_isSpringBoard = NO;
 
+// 【核心防护】：C级线程局部变量，彻底防止 UIFont 内部调用产生的无限递归和偶发卡死！
+static __thread BOOL isHooking = NO;
+
 // ================= [高精度防崩：精准定位日历图标缓存溢出] =================
 static BOOL isDangerousIconQueue() {
     if (!g_isSpringBoard) return NO;
@@ -28,8 +31,7 @@ static BOOL isDangerousIconQueue() {
 
 // ================= [安全过滤逻辑] =================
 static BOOL shouldBypassFont(NSString *fontName) {
-    if (!fontName) return NO; // 名字为空通常是系统动态字体，不能 Bypass！必须拦截！
-    
+    if (!fontName) return NO; 
     if ([fontName isEqualToString:g_customFontName] || [fontName isEqualToString:g_customBoldFontName]) return YES;
     
     NSString *lower = [fontName lowercaseString];
@@ -74,11 +76,9 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     return newDesc;
 }
 
-// ================= [修复：UIFontDescriptor 符号丢失问题] =================
 %hook UIFontDescriptor
 - (id)fontDescriptorWithSymbolicTraits:(unsigned int)traits {
     id orig = %orig;
-    // 很多时候系统尝试请求不存在的 Traits 时会返回 nil，导致后续闪退，此处强制兜底
     if (!orig && g_enabled && !isDangerousIconQueue()) {
         NSString *target = (traits & UIFontDescriptorTraitBold) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
         return [UIFontDescriptor fontDescriptorWithName:target size:self.pointSize];
@@ -87,233 +87,284 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
 }
 %end
 
-
-// ================= [UIFont 地毯式 Hook 层] =================
+// ================= [UIFont 地毯式 Hook 层 (带死锁防护)] =================
 %hook UIFont
 
-// 1. 公共构建方法
 + (id)fontWithName:(NSString *)fontName size:(CGFloat)fontSize {
-    if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(fontName)) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue() || shouldBypassFont(fontName)) return %orig;
+    isHooking = YES;
     NSString *targetFont = isBoldRequest(fontName, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     id ret = %orig(targetFont, getScaledSize(fontSize));
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)fontWithName:(NSString *)fontName size:(CGFloat)fontSize traits:(int)traits {
-    if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(fontName)) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue() || shouldBypassFont(fontName)) return %orig;
+    isHooking = YES;
     NSString *targetFont = isBoldRequest(fontName, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     id ret = %orig(targetFont, getScaledSize(fontSize), traits);
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)_fontWithName:(NSString *)fontName size:(CGFloat)fontSize {
-    if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(fontName)) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue() || shouldBypassFont(fontName)) return %orig;
+    isHooking = YES;
     NSString *targetFont = isBoldRequest(fontName, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     id ret = %orig(targetFont, getScaledSize(fontSize));
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)fontWithFamilyName:(NSString *)name traits:(int)traits size:(double)size {
-    if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(name)) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue() || shouldBypassFont(name)) return %orig;
+    isHooking = YES;
     NSString *targetFont = (traits & UIFontDescriptorTraitBold) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
-// 2. 描述符与 SwiftUI/Widget 核心私有初始化
 + (UIFont *)fontWithDescriptor:(UIFontDescriptor *)descriptor size:(CGFloat)size {
-    if (!g_enabled || isDangerousIconQueue() || !descriptor) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue() || !descriptor) return %orig;
+    isHooking = YES;
     UIFontDescriptor *newDesc = getReplacedDescriptor(descriptor);
     CGFloat targetSize = (size > 0) ? size : descriptor.pointSize;
     newDesc = [newDesc fontDescriptorWithSize:getScaledSize(targetSize)];
     id ret = %orig(newDesc, 0);
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
-// 【关键突破】：拦截 SwiftUI 和 Widgets 使用的最底层 7 参数初始化方法！
 + (id)_fontWithDescriptor:(id)descriptor size:(double)size textStyleForScaling:(id)scaling pointSizeForScaling:(double)pointScaling maximumPointSizeAfterScaling:(double)maxScaling forIB:(BOOL)ib legibilityWeight:(long long)weight {
-    if (!g_enabled || isDangerousIconQueue() || !descriptor) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue() || !descriptor) return %orig;
+    isHooking = YES;
     UIFontDescriptor *newDesc = getReplacedDescriptor(descriptor);
     id ret = %orig(newDesc, getScaledSize(size), scaling, pointScaling, maxScaling, ib, weight);
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
-// 3. System Font 系列 (包括视频时间与各种变体)
 + (id)systemFontOfSize:(CGFloat)size {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     id ret = [self fontWithName:g_customFontName size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)systemFontOfSize:(double)size traits:(int)traits {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     NSString *targetFont = (traits & UIFontDescriptorTraitBold) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)systemFontOfSize:(CGFloat)size weight:(CGFloat)weight {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)systemFontOfSize:(CGFloat)size weight:(CGFloat)weight design:(id)design {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)systemFontOfSize:(CGFloat)size weight:(CGFloat)weight width:(CGFloat)width {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)_systemFontsOfSize:(double)size traits:(int)traits {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     NSString *targetFont = (traits & UIFontDescriptorTraitBold) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)_systemFontOfSize:(double)size width:(id)width traits:(int)traits {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     NSString *targetFont = (traits & UIFontDescriptorTraitBold) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)boldSystemFontOfSize:(CGFloat)size {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     NSString *targetFont = g_customBoldFontName ?: g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)italicSystemFontOfSize:(CGFloat)size {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     id ret = [self fontWithName:g_customFontName size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
-// 【关键突破】：视频时间与等宽数字拦截
 + (id)monospacedDigitSystemFontOfSize:(double)size weight:(double)weight {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)monospacedSystemFontOfSize:(double)size weight:(double)weight {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)userFontOfSize:(double)size {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     id ret = [self fontWithName:g_customFontName size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
-// 【关键突破】：私有光学术型字体全拦截
 + (id)_lightSystemFontOfSize:(double)size {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     id ret = [self fontWithName:g_customFontName size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 + (id)_thinSystemFontOfSize:(double)size {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     id ret = [self fontWithName:g_customFontName size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 + (id)_ultraLightSystemFontOfSize:(double)size {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     id ret = [self fontWithName:g_customFontName size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 + (id)_opticalSystemFontOfSize:(double)size {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     id ret = [self fontWithName:g_customFontName size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 + (id)_opticalBoldSystemFontOfSize:(double)size {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     NSString *targetFont = g_customBoldFontName ?: g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(size)];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
-// 4. Dynamic Type (preferred) 全家桶
 + (id)preferredFontForTextStyle:(UIFontTextStyle)style {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
     id ret = [self fontWithDescriptor:desc size:0];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)preferredFontForTextStyle:(UIFontTextStyle)style compatibleWithTraitCollection:(UITraitCollection *)traitCollection {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style compatibleWithTraitCollection:traitCollection];
     id ret = [self fontWithDescriptor:desc size:0];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)ib_preferredFontForTextStyle:(UIFontTextStyle)style {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
     id ret = [self fontWithDescriptor:desc size:0];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)defaultFontForTextStyle:(UIFontTextStyle)style {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
     id ret = [self fontWithDescriptor:desc size:0];
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 + (id)_preferredFontForTextStyle:(id)style weight:(double)weight {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     UIFont *origFont = %orig;
-    if (!origFont) return origFont;
+    if (!origFont) { isHooking = NO; return origFont; }
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(origFont.pointSize)];
+    isHooking = NO;
     return ret ? ret : origFont;
 }
 
 + (id)_preferredFontForTextStyle:(id)style design:(id)design weight:(double)weight {
-    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue()) return %orig;
+    isHooking = YES;
     UIFont *origFont = %orig;
-    if (!origFont) return origFont;
+    if (!origFont) { isHooking = NO; return origFont; }
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     id ret = [self fontWithName:targetFont size:getScaledSize(origFont.pointSize)];
+    isHooking = NO;
     return ret ? ret : origFont;
 }
 
-// 5. 实例初始化与归档反序列化
 - (id)initWithName:(NSString *)name size:(double)size {
-    if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(name)) return %orig;
+    if (isHooking || !g_enabled || isDangerousIconQueue() || shouldBypassFont(name)) return %orig;
+    isHooking = YES;
     NSString *targetFont = isBoldRequest(name, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
     id ret = %orig(targetFont, getScaledSize(size));
+    isHooking = NO;
     return ret ? ret : %orig;
 }
 
 - (id)initWithCoder:(NSCoder *)coder {
     UIFont *font = %orig;
-    if (!g_enabled || isDangerousIconQueue() || !font) return font;
-    
+    if (isHooking || !g_enabled || isDangerousIconQueue() || !font) return font;
+    isHooking = YES;
     BOOL wantBold = (font.fontDescriptor.symbolicTraits & UIFontDescriptorTraitBold) != 0;
     NSString *target = (wantBold && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
-    
-    if (!target || shouldBypassFont(font.fontName)) return font;
+    if (!target || shouldBypassFont(font.fontName)) { isHooking = NO; return font; }
     
     id ret = [UIFont fontWithName:target size:getScaledSize(font.pointSize)];
+    isHooking = NO;
     return ret ? ret : font;
 }
 
