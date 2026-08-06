@@ -11,7 +11,6 @@
 
 extern char **environ;
 
-// ================= [修复 1]: 显式声明系统私有 API，解决字典读取越界导致的闪退
 @interface PSSpecifier (NeoFontPrivate)
 - (void)setValues:(NSArray *)values titles:(NSArray *)titles;
 @end
@@ -34,7 +33,6 @@ static NSString * GetFontDirPath() {
     return UITableViewStyleGrouped;
 }
 
-// ================= [大厂级 UI：原生药丸圆角与背景适配] =================
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
     if ([cell respondsToSelector:@selector(specifier)]) {
         PSSpecifier *spec = [cell performSelector:@selector(specifier)];
@@ -74,7 +72,6 @@ static NSString * GetFontDirPath() {
     if (@available(iOS 13.0, *)) cell.layer.cornerCurve = kCACornerCurveContinuous;
 }
 
-// ================= [动态加载已导入的字体] =================
 - (NSArray *)specifiers {
     if (!_specifiers) {
         NSMutableArray *specs = [[self loadSpecifiersFromPlistName:@"Root" target:self] mutableCopy];
@@ -88,7 +85,6 @@ static NSString * GetFontDirPath() {
         for (NSString *file in files) {
             if ([file hasSuffix:@".ttf"] || [file hasSuffix:@".otf"] || [file hasSuffix:@".ttc"]) {
                 NSURL *url = [NSURL fileURLWithPath:[fontDir stringByAppendingPathComponent:file]];
-                // CoreText 解析真实字体名 (支持 TTC 内的多个 Face)
                 NSArray *descriptors = (__bridge_transfer NSArray *)CTFontManagerCreateFontDescriptorsFromURL((__bridge CFURLRef)url);
                 for (UIFontDescriptor *desc in descriptors) {
                     NSString *psName = desc.fontAttributes[@"NSFontNameAttribute"];
@@ -100,11 +96,9 @@ static NSString * GetFontDirPath() {
             }
         }
         
-        // 动态注入选项到 List
         for (PSSpecifier *spec in specs) {
             NSString *key = [spec propertyForKey:@"key"];
             if ([key isEqualToString:@"CustomFont"] || [key isEqualToString:@"CustomBoldFont"]) {
-                // 安全调用私有 API 绑定数据源，防止崩溃
                 [spec setValues:fontValues titles:fontNames];
             }
         }
@@ -113,17 +107,14 @@ static NSString * GetFontDirPath() {
     return _specifiers;
 }
 
-// 当用户修改任何偏好时，立刻通知 Tweak 热更新
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
     [super setPreferenceValue:value specifier:specifier];
     
-    // 发送热更新通知，让所有进程立刻重新注册字体 + 清缓存
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                          CFSTR("com.iosdump.neofont.prefsChanged"),
                                          NULL, NULL, true);
 }
 
-// ================= [文件导入核心逻辑 (支持 ZIP/TTF/OTF/TTC)] =================
 - (void)importFontAction {
     NSArray *types = @[@"public.font", @"public.truetype-ttf-font", @"public.opentype-font", @"public.zip-archive"];
     
@@ -143,11 +134,9 @@ static NSString * GetFontDirPath() {
     BOOL needReload = NO;
     
     for (NSURL *url in urls) {
-        // [核心修复 2]: 必须开启安全访问权限，否则系统沙盒会拦截读取！
         BOOL isScoped = [url startAccessingSecurityScopedResource];
         NSString *ext = [url.pathExtension lowercaseString];
         
-        // 字体直装支持 (必须用 Copy，因原文件可能是只读权限)
         if ([ext isEqualToString:@"ttf"] || [ext isEqualToString:@"otf"] || [ext isEqualToString:@"ttc"]) {
             NSString *destPath = [destDir stringByAppendingPathComponent:[url lastPathComponent]];
             [fm removeItemAtPath:destPath error:nil];
@@ -155,7 +144,6 @@ static NSString * GetFontDirPath() {
                 needReload = YES;
             }
         }
-        // ZIP 解压支持 (利用 iOS 底层 unzip 命令)
         else if ([ext isEqualToString:@"zip"]) {
             NSString *tempDir = [NSTemporaryDirectory() stringByAppendingPathComponent:[[NSUUID UUID] UUIDString]];
             [fm createDirectoryAtPath:tempDir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -169,7 +157,7 @@ static NSString * GetFontDirPath() {
                 int status = posix_spawn(&pid, [unzipPath UTF8String], NULL, NULL, (char* const*)argv, environ);
                 
                 if (status == 0) {
-                    waitpid(pid, &status, 0); // 等待解压完成
+                    waitpid(pid, &status, 0);
                     
                     NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:tempDir];
                     for (NSString *subPath in enumerator) {
@@ -178,7 +166,7 @@ static NSString * GetFontDirPath() {
                             NSString *fullSubPath = [tempDir stringByAppendingPathComponent:subPath];
                             NSString *finalDest = [destDir stringByAppendingPathComponent:[subPath lastPathComponent]];
                             
-                            [fm removeItemAtPath:finalDest error:nil]; // 覆盖旧文件
+                            [fm removeItemAtPath:finalDest error:nil];
                             if ([fm moveItemAtPath:fullSubPath toPath:finalDest error:nil]) {
                                 needReload = YES;
                             }
@@ -186,7 +174,7 @@ static NSString * GetFontDirPath() {
                     }
                 }
             }
-            [fm removeItemAtPath:tempDir error:nil]; // 清理临时目录
+            [fm removeItemAtPath:tempDir error:nil];
         }
         
         if (isScoped) {
@@ -195,7 +183,6 @@ static NSString * GetFontDirPath() {
     }
     
     if (needReload) {
-        // 导入成功后立刻热更新
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                              CFSTR("com.iosdump.neofont.prefsChanged"),
                                              NULL, NULL, true);
@@ -204,42 +191,56 @@ static NSString * GetFontDirPath() {
                                                                        message:@"字体已导入并热更新。大部分界面已立即生效，锁屏键盘/桌面文件夹建议注销一次彻底稳定。" 
                                                                 preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            [self reloadSpecifiers]; // 刷新列表，显示新字体
+            [self reloadSpecifiers];
         }]];
         [self presentViewController:alert animated:YES completion:nil];
     }
 }
 
-// ================= [兼容有根/无根/RootHide的注销逻辑] =================
 - (void)respringAction {
     pid_t pid;
     NSFileManager *fm = [NSFileManager defaultManager];
-    
-    // 1. 无论用哪种方式注销，都先杀掉小组件进程，让小组件立刻刷新
     NSString *killallPath = jbroot(@"/usr/bin/killall");
+    
+    // 1. 先杀所有持有字体缓存的进程，确保百分百生效
     if ([fm fileExistsAtPath:killallPath]) {
-        const char *args1[] = {"killall", "-9", "widgetkitd", NULL};
-        posix_spawn(&pid, [killallPath UTF8String], NULL, NULL, (char *const *)args1, environ);
-        waitpid(pid, NULL, 0);
-        
-        // 再杀一次可能的 Renderer
-        const char *args1b[] = {"killall", "-9", "WidgetRenderer", NULL};
-        posix_spawn(&pid, [killallPath UTF8String], NULL, NULL, (char *const *)args1b, environ);
-        waitpid(pid, NULL, 0);
+        const char *procs[] = {
+            "widgetkitd",
+            "WidgetRenderer",
+            "Spotlight",
+            "InputUI",
+            "Keyboard",
+            "com.apple.Keyboard",
+            "Search",
+            "mediaserverd",
+            NULL
+        };
+        for (int i = 0; procs[i]; i++) {
+            const char *args[] = {"killall", "-9", procs[i], NULL};
+            posix_spawn(&pid, [killallPath UTF8String], NULL, NULL, (char *const *)args, environ);
+            waitpid(pid, NULL, 0);
+        }
     }
     
-    // 2. 优先尝试使用 sbreload (比强杀 backboardd 更干净，大部分越狱环境自带)
+    // 2. 优先 sbreload（最干净，有黑屏）
     NSString *sbreloadPath = jbroot(@"/usr/bin/sbreload");
     if ([fm fileExistsAtPath:sbreloadPath]) {
-        const char *args2[] = {"sbreload", NULL};
-        posix_spawn(&pid, [sbreloadPath UTF8String], NULL, NULL, (char *const *)args2, environ);
+        const char *args[] = {"sbreload", NULL};
+        posix_spawn(&pid, [sbreloadPath UTF8String], NULL, NULL, (char *const *)args, environ);
         return;
     }
     
-    // 3. Fallback：如果没有 sbreload，则强杀 backboardd
+    // 3. Fallback：kill backboardd
     if ([fm fileExistsAtPath:killallPath]) {
-        const char *args3[] = {"killall", "-9", "backboardd", NULL};
-        posix_spawn(&pid, [killallPath UTF8String], NULL, NULL, (char *const *)args3, environ);
+        const char *args[] = {"killall", "-9", "backboardd", NULL};
+        posix_spawn(&pid, [killallPath UTF8String], NULL, NULL, (char *const *)args, environ);
+        return;
+    }
+    
+    // 4. 最终 Fallback：直接杀 SpringBoard（保证所有环境都能触发）
+    if ([fm fileExistsAtPath:killallPath]) {
+        const char *args[] = {"killall", "-9", "SpringBoard", NULL};
+        posix_spawn(&pid, [killallPath UTF8String], NULL, NULL, (char *const *)args, environ);
     }
 }
 
