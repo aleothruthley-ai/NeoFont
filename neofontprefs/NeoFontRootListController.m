@@ -193,18 +193,32 @@ static NSString * GetFontDirPath() {
     }
 }
 
-// ================= [秒级注销逻辑] =================
+// ================= [兼容有根/无根/RootHide的注销逻辑] =================
 - (void)respringAction {
     pid_t pid;
+    NSFileManager *fm = [NSFileManager defaultManager];
     
-    // 核心修复 3：先瞬间击杀小组件后台进程，确保小组件即刻刷新！
-    const char* args1[] = {"killall", "-9", "widgetkitd", NULL};
-    posix_spawn(&pid, "/usr/bin/killall", NULL, NULL, (char* const*)args1, environ);
-    waitpid(pid, NULL, 0); // 稍微等待小组件进程挂掉
-
-    // 然后再注销 SpringBoard
-    const char* args2[] = {"killall", "-9", "backboardd", NULL};
-    posix_spawn(&pid, "/usr/bin/killall", NULL, NULL, (char* const*)args2, environ);
+    // 1. 无论用哪种方式注销，都先杀掉小组件进程，让小组件立刻刷新
+    NSString *killallPath = jbroot(@"/usr/bin/killall");
+    if ([fm fileExistsAtPath:killallPath]) {
+        const char *args1[] = {"killall", "-9", "widgetkitd", NULL};
+        posix_spawn(&pid, [killallPath UTF8String], NULL, NULL, (char *const *)args1, environ);
+        waitpid(pid, NULL, 0);
+    }
+    
+    // 2. 优先尝试使用 sbreload (比强杀 backboardd 更干净，大部分越狱环境自带)
+    NSString *sbreloadPath = jbroot(@"/usr/bin/sbreload");
+    if ([fm fileExistsAtPath:sbreloadPath]) {
+        const char *args2[] = {"sbreload", NULL};
+        posix_spawn(&pid, [sbreloadPath UTF8String], NULL, NULL, (char *const *)args2, environ);
+        return;
+    }
+    
+    // 3. Fallback：如果没有 sbreload，则强杀 backboardd
+    if ([fm fileExistsAtPath:killallPath]) {
+        const char *args3[] = {"killall", "-9", "backboardd", NULL};
+        posix_spawn(&pid, [killallPath UTF8String], NULL, NULL, (char *const *)args3, environ);
+    }
 }
 
 @end
