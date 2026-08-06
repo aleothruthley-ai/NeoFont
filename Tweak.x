@@ -7,6 +7,11 @@
 #define jbroot(path) path
 #endif
 
+// ================= [私有 API 声明，解决编译错误] =================
+@interface UIFont (NeoFontPrivate)
++ (void)_evictAllItemsFromFontAndFontDescriptorCaches;
+@end
+
 // ================= [全局配置变量] =================
 static BOOL g_enabled = YES;
 static NSString *g_customFontName = nil;
@@ -69,7 +74,7 @@ static BOOL isBoldRequest(NSString *fontName, CGFloat weight) {
 
 static CGFloat getScaledSize(CGFloat originalSize) {
     if (originalSize <= 0) return originalSize;
-    // SpringBoard 下强制 scale=1.0 可进一步降低 metrics 冲击（可选，已注释）
+    // SpringBoard 下强制 scale=1.0 可进一步降低 metrics 冲击（需要时取消注释）
     // if (g_isSpringBoard) return originalSize;
     return originalSize * g_fontSizeScale;
 }
@@ -382,7 +387,6 @@ static void registerCustomFonts() {
         CTFontManagerUnregisterFontsForURL((__bridge CFURLRef)fontURL, kCTFontManagerScopeProcess, NULL);
         bool success = CTFontManagerRegisterFontsForURL((__bridge CFURLRef)fontURL, kCTFontManagerScopeProcess, &error);
         if (!success && error) {
-            // 可在此写日志调试
             CFRelease(error);
         }
     }
