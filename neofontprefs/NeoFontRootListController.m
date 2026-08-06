@@ -11,7 +11,7 @@
 
 extern char **environ;
 
-// [修复 1]: 显式声明系统私有 API，既能通过严苛的编译，又能完美配置数组，彻底解决点击闪退！
+// ================= [修复 1]: 显式声明系统私有 API，解决字典读取越界导致的闪退
 @interface PSSpecifier (NeoFontPrivate)
 - (void)setValues:(NSArray *)values titles:(NSArray *)titles;
 @end
@@ -34,7 +34,7 @@ static NSString * GetFontDirPath() {
     return UITableViewStyleGrouped;
 }
 
-// 继承原生药丸圆角 UI
+// ================= [大厂级 UI：原生药丸圆角与背景适配] =================
 - (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
     if ([cell respondsToSelector:@selector(specifier)]) {
         PSSpecifier *spec = [cell performSelector:@selector(specifier)];
@@ -74,11 +74,11 @@ static NSString * GetFontDirPath() {
     if (@available(iOS 13.0, *)) cell.layer.cornerCurve = kCACornerCurveContinuous;
 }
 
+// ================= [动态加载已导入的字体] =================
 - (NSArray *)specifiers {
     if (!_specifiers) {
         NSMutableArray *specs = [[self loadSpecifiersFromPlistName:@"Root" target:self] mutableCopy];
         
-        // 动态读取已导入的字体，解析 PostScript Name 供用户选择
         NSMutableArray *fontNames = [NSMutableArray arrayWithObject:@"系统默认"];
         NSMutableArray *fontValues = [NSMutableArray arrayWithObject:@""];
         
@@ -104,7 +104,7 @@ static NSString * GetFontDirPath() {
         for (PSSpecifier *spec in specs) {
             NSString *key = [spec propertyForKey:@"key"];
             if ([key isEqualToString:@"CustomFont"] || [key isEqualToString:@"CustomBoldFont"]) {
-                // 安全调用私有 API 绑定数据源
+                // 安全调用私有 API 绑定数据源，防止崩溃
                 [spec setValues:fontValues titles:fontNames];
             }
         }
@@ -133,11 +133,11 @@ static NSString * GetFontDirPath() {
     BOOL needReload = NO;
     
     for (NSURL *url in urls) {
-        // [修复 2]: 必须开启安全访问权限，否则系统直接拦截读取请求！
+        // [核心修复 2]: 必须开启安全访问权限，否则系统沙盒会拦截读取！
         BOOL isScoped = [url startAccessingSecurityScopedResource];
         NSString *ext = [url.pathExtension lowercaseString];
         
-        // 字体直装支持 (必须用 Copy 而不能用 Move，因为原文件可能是只读沙盒权限)
+        // 字体直装支持 (必须用 Copy，因原文件可能是只读权限)
         if ([ext isEqualToString:@"ttf"] || [ext isEqualToString:@"otf"] || [ext isEqualToString:@"ttc"]) {
             NSString *destPath = [destDir stringByAppendingPathComponent:[url lastPathComponent]];
             [fm removeItemAtPath:destPath error:nil];
@@ -150,7 +150,6 @@ static NSString * GetFontDirPath() {
             NSString *tempDir = [NSTemporaryDirectory() stringByAppendingPathComponent:[[NSUUID UUID] UUIDString]];
             [fm createDirectoryAtPath:tempDir withIntermediateDirectories:YES attributes:nil error:nil];
             
-            // 核心修复：必须把安全沙盒内的 ZIP 复制到我们自己App的临时目录下，外部的 unzip 子进程才有权限读取！
             NSString *tempZipPath = [tempDir stringByAppendingPathComponent:@"temp.zip"];
             if ([fm copyItemAtURL:url toURL:[NSURL fileURLWithPath:tempZipPath] error:nil]) {
                 
@@ -162,7 +161,6 @@ static NSString * GetFontDirPath() {
                 if (status == 0) {
                     waitpid(pid, &status, 0); // 等待解压完成
                     
-                    // 遍历解压出的目录寻找字体文件
                     NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:tempDir];
                     for (NSString *subPath in enumerator) {
                         NSString *subExt = [subPath.pathExtension lowercaseString];
@@ -181,7 +179,6 @@ static NSString * GetFontDirPath() {
             [fm removeItemAtPath:tempDir error:nil]; // 清理临时目录
         }
         
-        // 务必关闭安全权限
         if (isScoped) {
             [url stopAccessingSecurityScopedResource];
         }
@@ -190,15 +187,24 @@ static NSString * GetFontDirPath() {
     if (needReload) {
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导入成功" message:@"字体已导入并解析，请在列表中选择并注销设备生效。" preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            [self reloadSpecifiers]; // 刷新列表，显示新解压出的字体
+            [self reloadSpecifiers]; // 刷新列表，显示新字体
         }]];
         [self presentViewController:alert animated:YES completion:nil];
     }
 }
 
+// ================= [秒级注销逻辑] =================
 - (void)respringAction {
     pid_t pid;
-    const char* args[] = {"killall", "-9", "backboardd", NULL};
-    posix_spawn(&pid, "/usr/bin/killall", NULL, NULL, (char* const*)args, environ);
+    
+    // 核心修复 3：先瞬间击杀小组件后台进程，确保小组件即刻刷新！
+    const char* args1[] = {"killall", "-9", "widgetkitd", NULL};
+    posix_spawn(&pid, "/usr/bin/killall", NULL, NULL, (char* const*)args1, environ);
+    waitpid(pid, NULL, 0); // 稍微等待小组件进程挂掉
+
+    // 然后再注销 SpringBoard
+    const char* args2[] = {"killall", "-9", "backboardd", NULL};
+    posix_spawn(&pid, "/usr/bin/killall", NULL, NULL, (char* const*)args2, environ);
 }
+
 @end
