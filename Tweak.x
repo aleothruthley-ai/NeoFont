@@ -7,7 +7,7 @@
 #define jbroot(path) path
 #endif
 
-// ================= [私有 API 声明，解决编译错误] =================
+// ================= [私有 API 声明] =================
 @interface UIFont (NeoFontPrivate)
 + (void)_evictAllItemsFromFontAndFontDescriptorCaches;
 @end
@@ -20,13 +20,17 @@ static CGFloat g_fontSizeScale = 1.0;
 static NSArray *g_blacklist = nil;
 static BOOL g_isSpringBoard = NO;
 
-// ================= [高精度防崩：大幅扩展危险队列，解决文件夹卡住] =================
+// ================= [高精度防崩：强制拦截所有危险路径] =================
 static BOOL isDangerousIconQueue() {
     if (!g_isSpringBoard) return NO;
-    const char *label = dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL);
-    if (!label) return NO;
     
-    // 覆盖 Icon 缓存、Folder 打开、Layout、Label 计算等所有高风险路径
+    const char *label = dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL);
+    if (!label) return YES; // 保险起见
+    
+    // 1. 主线程布局（文件夹卡死的最核心原因）
+    if (strcmp(label, "com.apple.main-thread") == 0) return YES;
+    
+    // 2. 所有 Icon / Folder / Layout 相关
     if (strstr(label, "SBHIconImageCache") ||
         strstr(label, "IconPrecache") ||
         strstr(label, "IconImage") ||
@@ -38,7 +42,9 @@ static BOOL isDangerousIconQueue() {
         strstr(label, "IconManager") ||
         strstr(label, "HomeScreen") ||
         strstr(label, "IconList") ||
-        strstr(label, "PageManagement")) {
+        strstr(label, "PageManagement") ||
+        strstr(label, "UIView") ||
+        strstr(label, "CATransaction")) {
         return YES;
     }
     return NO;
@@ -46,7 +52,7 @@ static BOOL isDangerousIconQueue() {
 
 // ================= [安全过滤逻辑] =================
 static BOOL shouldBypassFont(NSString *fontName) {
-    if (!fontName || fontName.length == 0) return NO; // 名字为空通常是系统动态字体，不能 Bypass！必须拦截！
+    if (!fontName || fontName.length == 0) return NO;
     
     if ([fontName isEqualToString:g_customFontName] || [fontName isEqualToString:g_customBoldFontName]) return YES;
     
@@ -57,7 +63,7 @@ static BOOL shouldBypassFont(NSString *fontName) {
         [lower containsString:@"assets"] || 
         [lower containsString:@"fontawesome"] ||
         [lower containsString:@"camera"] ||
-        [lower containsString:@"keycap"] ||      // 锁屏密码键盘相关
+        [lower containsString:@"keycap"] ||
         [lower containsString:@"passcode"] ||
         [lower containsString:@"keyboard"]) { 
         return YES;
@@ -67,15 +73,16 @@ static BOOL shouldBypassFont(NSString *fontName) {
 
 static BOOL isBoldRequest(NSString *fontName, CGFloat weight) {
     if (weight >= 0.2) return YES;
+    if (!fontName) return NO;
     NSString *lower = [fontName lowercaseString];
-    if ([lower containsString:@"bold"] || [lower containsString:@"heavy"] || [lower containsString:@"black"]) return YES;
+    if ([lower containsString:@"bold"] || [lower containsString:@"heavy"] || [lower containsString:@"black"] || [lower containsString:@"semibold"]) return YES;
     return NO;
 }
 
 static CGFloat getScaledSize(CGFloat originalSize) {
     if (originalSize <= 0) return originalSize;
-    // SpringBoard 下强制 scale=1.0 可进一步降低 metrics 冲击（需要时取消注释）
-    // if (g_isSpringBoard) return originalSize;
+    // 【关键】SpringBoard 强制 scale = 1.0，彻底消除 metrics 差异导致的文件夹卡死
+    if (g_isSpringBoard) return originalSize;
     return originalSize * g_fontSizeScale;
 }
 
@@ -92,16 +99,28 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
 
     UIFontDescriptor *newDesc = [UIFontDescriptor fontDescriptorWithName:targetFont size:origDesc.pointSize];
     if (origDesc.symbolicTraits) {
-        newDesc = [newDesc fontDescriptorWithSymbolicTraits:origDesc.symbolicTraits];
+        UIFontDescriptor *withTraits = [newDesc fontDescriptorWithSymbolicTraits:origDesc.symbolicTraits];
+        if (withTraits) newDesc = withTraits;
     }
     return newDesc ?: origDesc;
 }
 
-// ================= [修复：UIFontDescriptor 符号丢失问题] =================
+static UIFont *replaceFontIfNeeded(UIFont *origFont) {
+    if (!g_enabled || !origFont || isDangerousIconQueue()) return origFont;
+    if (shouldBypassFont(origFont.fontName)) return origFont;
+    
+    BOOL wantBold = (origFont.fontDescriptor.symbolicTraits & UIFontDescriptorTraitBold) != 0;
+    NSString *target = (wantBold && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
+    if (!target) return origFont;
+    
+    UIFont *newFont = [UIFont fontWithName:target size:getScaledSize(origFont.pointSize)];
+    return newFont ?: origFont;
+}
+
+// ================= [UIFontDescriptor 符号丢失兜底] =================
 %hook UIFontDescriptor
 - (id)fontDescriptorWithSymbolicTraits:(unsigned int)traits {
     id orig = %orig;
-    // 很多时候系统尝试请求不存在的 Traits 时会返回 nil，导致后续闪退，此处强制兜底
     if (!orig && g_enabled && !isDangerousIconQueue()) {
         NSString *target = (traits & UIFontDescriptorTraitBold) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
         if (target) {
@@ -113,10 +132,9 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
 %end
 
 
-// ================= [UIFont 地毯式 Hook 层] =================
+// ================= [UIFont 地毯式 Hook] =================
 %hook UIFont
 
-// 1. 公共构建方法
 + (id)fontWithName:(NSString *)fontName size:(CGFloat)fontSize {
     if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(fontName)) return %orig;
     NSString *targetFont = isBoldRequest(fontName, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
@@ -149,7 +167,6 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     return ret ? ret : %orig;
 }
 
-// 2. 描述符与 SwiftUI/Widget 核心私有初始化
 + (UIFont *)fontWithDescriptor:(UIFontDescriptor *)descriptor size:(CGFloat)size {
     if (!g_enabled || isDangerousIconQueue() || !descriptor) return %orig;
     UIFontDescriptor *newDesc = getReplacedDescriptor(descriptor);
@@ -159,7 +176,6 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     return ret ? ret : %orig;
 }
 
-// 【关键突破】：拦截 SwiftUI 和 Widgets 使用的最底层 7 参数初始化方法！
 + (id)_fontWithDescriptor:(id)descriptor size:(double)size textStyleForScaling:(id)scaling pointSizeForScaling:(double)pointScaling maximumPointSizeAfterScaling:(double)maxScaling forIB:(BOOL)ib legibilityWeight:(long long)weight {
     if (!g_enabled || isDangerousIconQueue() || !descriptor) return %orig;
     UIFontDescriptor *newDesc = getReplacedDescriptor(descriptor);
@@ -167,7 +183,6 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     return ret ? ret : %orig;
 }
 
-// 3. System Font 系列 (包括视频时间与各种变体)
 + (id)systemFontOfSize:(CGFloat)size {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     if (!g_customFontName) return %orig;
@@ -238,7 +253,6 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     return ret ? ret : %orig;
 }
 
-// 【关键突破】：视频时间与等宽数字拦截
 + (id)monospacedDigitSystemFontOfSize:(double)size weight:(double)weight {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
@@ -262,7 +276,6 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     return ret ? ret : %orig;
 }
 
-// 【关键突破】：私有光学术型字体全拦截
 + (id)_lightSystemFontOfSize:(double)size {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     if (!g_customFontName) return %orig;
@@ -295,7 +308,7 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     return ret ? ret : %orig;
 }
 
-// 4. Dynamic Type (preferred) 全家桶
+// preferred 全家桶
 + (id)preferredFontForTextStyle:(UIFontTextStyle)style {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     UIFontDescriptor *desc = [UIFontDescriptor preferredFontDescriptorWithTextStyle:style];
@@ -327,24 +340,39 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
 + (id)_preferredFontForTextStyle:(id)style weight:(double)weight {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     UIFont *origFont = %orig;
-    if (!origFont) return origFont;
-    NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
-    if (!targetFont) return origFont;
-    id ret = [self fontWithName:targetFont size:getScaledSize(origFont.pointSize)];
-    return ret ? ret : origFont;
+    return replaceFontIfNeeded(origFont);
 }
 
 + (id)_preferredFontForTextStyle:(id)style design:(id)design weight:(double)weight {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     UIFont *origFont = %orig;
-    if (!origFont) return origFont;
-    NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
-    if (!targetFont) return origFont;
-    id ret = [self fontWithName:targetFont size:getScaledSize(origFont.pointSize)];
-    return ret ? ret : origFont;
+    return replaceFontIfNeeded(origFont);
 }
 
-// 5. 实例初始化与归档反序列化
++ (id)_preferredFontForTextStyle:(id)style addingSymbolicTraits:(unsigned int)traits {
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    UIFont *origFont = %orig;
+    return replaceFontIfNeeded(origFont);
+}
+
++ (id)_preferredFontForTextStyle:(id)style addingSymbolicTraits:(unsigned int)traits design:(id)design weight:(double)weight {
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    UIFont *origFont = %orig;
+    return replaceFontIfNeeded(origFont);
+}
+
++ (id)_preferredFontForTextStyle:(id)style design:(id)design variant:(long long)variant {
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    UIFont *origFont = %orig;
+    return replaceFontIfNeeded(origFont);
+}
+
++ (id)_preferredFontForTextStyle:(id)style design:(id)design variant:(long long)variant compatibleWithTraitCollection:(id)collection {
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    UIFont *origFont = %orig;
+    return replaceFontIfNeeded(origFont);
+}
+
 - (id)initWithName:(NSString *)name size:(double)size {
     if (!g_enabled || isDangerousIconQueue() || shouldBypassFont(name)) return %orig;
     NSString *targetFont = isBoldRequest(name, 0) && g_customBoldFontName ? g_customBoldFontName : g_customFontName;
@@ -355,17 +383,41 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
 
 - (id)initWithCoder:(NSCoder *)coder {
     UIFont *font = %orig;
-    if (!g_enabled || isDangerousIconQueue() || !font) return font;
-    
-    BOOL wantBold = (font.fontDescriptor.symbolicTraits & UIFontDescriptorTraitBold) != 0;
-    NSString *target = (wantBold && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
-    
-    if (!target || shouldBypassFont(font.fontName)) return font;
-    
-    id ret = [UIFont fontWithName:target size:getScaledSize(font.pointSize)];
-    return ret ? ret : font;
+    return replaceFontIfNeeded(font);
 }
 
+%end
+
+
+// ================= 【最终拦截】解决打出来的字 + 白色键盘 key 字母 =================
+%hook UILabel
+- (void)setFont:(UIFont *)font {
+    if (!g_enabled || isDangerousIconQueue()) {
+        %orig;
+        return;
+    }
+    %orig(replaceFontIfNeeded(font));
+}
+%end
+
+%hook UITextField
+- (void)setFont:(UIFont *)font {
+    if (!g_enabled || isDangerousIconQueue()) {
+        %orig;
+        return;
+    }
+    %orig(replaceFontIfNeeded(font));
+}
+%end
+
+%hook UITextView
+- (void)setFont:(UIFont *)font {
+    if (!g_enabled || isDangerousIconQueue()) {
+        %orig;
+        return;
+    }
+    %orig(replaceFontIfNeeded(font));
+}
 %end
 
 
@@ -391,13 +443,12 @@ static void registerCustomFonts() {
         }
     }
     
-    // 强制清理所有字体缓存（解决锁屏键盘有时不生效的关键）
     if ([UIFont respondsToSelector:@selector(_evictAllItemsFromFontAndFontDescriptorCaches)]) {
         [UIFont _evictAllItemsFromFontAndFontDescriptorCaches];
     }
 }
 
-// ================= [热更新支持：prefs 改变立即生效 + 小组件强制刷新] =================
+// ================= [热更新] =================
 static void reloadPrefsAndFonts(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     NSString *prefPath = jbroot(@"/var/mobile/Library/Preferences/com.iosdump.neofont.plist");
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:prefPath];
@@ -413,7 +464,6 @@ static void reloadPrefsAndFonts(CFNotificationCenterRef center, void *observer, 
     
     registerCustomFonts();
     
-    // 强制刷新所有小组件（仅在 SpringBoard 执行）
     if (g_isSpringBoard) {
         Class WC = NSClassFromString(@"WidgetCenter");
         if (WC) {
@@ -425,7 +475,7 @@ static void reloadPrefsAndFonts(CFNotificationCenterRef center, void *observer, 
     }
 }
 
-// ================= [初始化与内存注册] =================
+// ================= [初始化] =================
 %ctor {
     NSString *bundleID = [NSBundle mainBundle].bundleIdentifier;
     g_isSpringBoard = [bundleID isEqualToString:@"com.apple.springboard"];
@@ -453,10 +503,8 @@ static void reloadPrefsAndFonts(CFNotificationCenterRef center, void *observer, 
     
     if (!g_customFontName || g_customFontName.length == 0) return;
 
-    // 使用强化注册
     registerCustomFonts();
     
-    // 注册热更新通知（设置面板改完后 post 这个 name 即可马上生效）
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     NULL,
                                     reloadPrefsAndFonts,
