@@ -188,9 +188,9 @@ static NSString * GetFontDirPath() {
                                              NULL, NULL, true);
         
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"导入成功" 
-                                                                       message:@"字体已导入并热更新。大部分界面已立即生效，锁屏键盘/桌面文件夹建议注销一次彻底稳定。" 
+                                                                       message:@"导入成功，请在下面字体配置选择" 
                                                                 preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"嗯" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
             [self reloadSpecifiers];
         }]];
         [self presentViewController:alert animated:YES completion:nil];
