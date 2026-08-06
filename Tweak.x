@@ -20,17 +20,14 @@ static CGFloat g_fontSizeScale = 1.0;
 static NSArray *g_blacklist = nil;
 static BOOL g_isSpringBoard = NO;
 
-// ================= [高精度防崩：强制拦截所有危险路径] =================
+// ================= [危险队列判断（只拦真正危险的，绝不能拦 main-thread）] =================
 static BOOL isDangerousIconQueue() {
     if (!g_isSpringBoard) return NO;
     
     const char *label = dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL);
-    if (!label) return YES; // 保险起见
+    if (!label) return NO;
     
-    // 1. 主线程布局（文件夹卡死的最核心原因）
-    if (strcmp(label, "com.apple.main-thread") == 0) return YES;
-    
-    // 2. 所有 Icon / Folder / Layout 相关
+    // 只拦截已知会导致文件夹卡死的队列
     if (strstr(label, "SBHIconImageCache") ||
         strstr(label, "IconPrecache") ||
         strstr(label, "IconImage") ||
@@ -42,9 +39,7 @@ static BOOL isDangerousIconQueue() {
         strstr(label, "IconManager") ||
         strstr(label, "HomeScreen") ||
         strstr(label, "IconList") ||
-        strstr(label, "PageManagement") ||
-        strstr(label, "UIView") ||
-        strstr(label, "CATransaction")) {
+        strstr(label, "PageManagement")) {
         return YES;
     }
     return NO;
@@ -81,12 +76,12 @@ static BOOL isBoldRequest(NSString *fontName, CGFloat weight) {
 
 static CGFloat getScaledSize(CGFloat originalSize) {
     if (originalSize <= 0) return originalSize;
-    // 【关键】SpringBoard 强制 scale = 1.0，彻底消除 metrics 差异导致的文件夹卡死
+    // SpringBoard 强制 scale = 1.0，降低 metrics 差异，防止文件夹卡死
     if (g_isSpringBoard) return originalSize;
     return originalSize * g_fontSizeScale;
 }
 
-// ================= [核心通用转换器] =================
+// ================= [核心转换器] =================
 static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     if (!origDesc) return nil;
     NSString *reqName = origDesc.fontAttributes[@"UIFontDescriptorNameAttribute"] ?: origDesc.fontAttributes[@"NSFontNameAttribute"];
@@ -106,7 +101,7 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
 }
 
 static UIFont *replaceFontIfNeeded(UIFont *origFont) {
-    if (!g_enabled || !origFont || isDangerousIconQueue()) return origFont;
+    if (!g_enabled || !origFont) return origFont;
     if (shouldBypassFont(origFont.fontName)) return origFont;
     
     BOOL wantBold = (origFont.fontDescriptor.symbolicTraits & UIFontDescriptorTraitBold) != 0;
@@ -117,7 +112,7 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
     return newFont ?: origFont;
 }
 
-// ================= [UIFontDescriptor 符号丢失兜底] =================
+// ================= [UIFontDescriptor 兜底] =================
 %hook UIFontDescriptor
 - (id)fontDescriptorWithSymbolicTraits:(unsigned int)traits {
     id orig = %orig;
@@ -339,38 +334,32 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
 
 + (id)_preferredFontForTextStyle:(id)style weight:(double)weight {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
-    UIFont *origFont = %orig;
-    return replaceFontIfNeeded(origFont);
+    return replaceFontIfNeeded(%orig);
 }
 
 + (id)_preferredFontForTextStyle:(id)style design:(id)design weight:(double)weight {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
-    UIFont *origFont = %orig;
-    return replaceFontIfNeeded(origFont);
+    return replaceFontIfNeeded(%orig);
 }
 
 + (id)_preferredFontForTextStyle:(id)style addingSymbolicTraits:(unsigned int)traits {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
-    UIFont *origFont = %orig;
-    return replaceFontIfNeeded(origFont);
+    return replaceFontIfNeeded(%orig);
 }
 
 + (id)_preferredFontForTextStyle:(id)style addingSymbolicTraits:(unsigned int)traits design:(id)design weight:(double)weight {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
-    UIFont *origFont = %orig;
-    return replaceFontIfNeeded(origFont);
+    return replaceFontIfNeeded(%orig);
 }
 
 + (id)_preferredFontForTextStyle:(id)style design:(id)design variant:(long long)variant {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
-    UIFont *origFont = %orig;
-    return replaceFontIfNeeded(origFont);
+    return replaceFontIfNeeded(%orig);
 }
 
 + (id)_preferredFontForTextStyle:(id)style design:(id)design variant:(long long)variant compatibleWithTraitCollection:(id)collection {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
-    UIFont *origFont = %orig;
-    return replaceFontIfNeeded(origFont);
+    return replaceFontIfNeeded(%orig);
 }
 
 - (id)initWithName:(NSString *)name size:(double)size {
@@ -382,17 +371,16 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
 }
 
 - (id)initWithCoder:(NSCoder *)coder {
-    UIFont *font = %orig;
-    return replaceFontIfNeeded(font);
+    return replaceFontIfNeeded(%orig);
 }
 
 %end
 
 
-// ================= 【最终拦截】解决打出来的字 + 白色键盘 key 字母 =================
+// ================= 【最终拦截】打出来的字 + 键盘字母（不受危险队列限制） =================
 %hook UILabel
 - (void)setFont:(UIFont *)font {
-    if (!g_enabled || isDangerousIconQueue()) {
+    if (!g_enabled) {
         %orig;
         return;
     }
@@ -402,7 +390,7 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
 
 %hook UITextField
 - (void)setFont:(UIFont *)font {
-    if (!g_enabled || isDangerousIconQueue()) {
+    if (!g_enabled) {
         %orig;
         return;
     }
@@ -412,7 +400,7 @@ static UIFont *replaceFontIfNeeded(UIFont *origFont) {
 
 %hook UITextView
 - (void)setFont:(UIFont *)font {
-    if (!g_enabled || isDangerousIconQueue()) {
+    if (!g_enabled) {
         %orig;
         return;
     }
