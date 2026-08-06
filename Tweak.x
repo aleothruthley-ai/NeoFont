@@ -23,18 +23,14 @@ static BOOL g_isSpringBoard = NO;
 // 【核心防护】：C级线程局部变量。只在核心 %orig 调用时加锁，打破 CoreText 死循环！
 static __thread BOOL isHooking = NO;
 
-// ================= [终极防崩：只拦截后台缓存队列，绝不误杀主线程可视 UI！] =================
+// ================= [终极防崩：只拦截后台图片缓存队列] =================
 static BOOL isDangerousIconQueue() {
     if (!g_isSpringBoard) return NO;
-    
-    // 【核心精髓】：所有能在屏幕上看到的锁屏、小组件、UI 都是在主线程更新的。
-    // 我们直接放行主线程，不仅能 100% 保证覆盖率，还能避开所有后台并发的图标缓存崩溃！
-    if ([NSThread isMainThread]) return NO;
+    if ([NSThread isMainThread]) return NO; // 主线程 (锁屏/小组件/通知) 全部放行！
     
     const char *label = dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL);
     if (!label) return NO;
     
-    // 拦截导致内存溢出和卡死的后台图片生成队列
     if (strstr(label, "Icon") ||
         strstr(label, "SBH") ||
         strstr(label, "Folder") ||
@@ -50,10 +46,6 @@ static BOOL isDangerousIconQueue() {
 // ================= [安全过滤逻辑] =================
 static BOOL shouldBypassFont(NSString *fontName) {
     if (!fontName) return NO; 
-    
-    // 删除了上一个版本的 [fontName hasPrefix:@"."] 限制！
-    // 因为苹果的 .SFUI 等核心 UI 字体必须被替换！
-    
     if ([fontName isEqualToString:g_customFontName] || [fontName isEqualToString:g_customBoldFontName]) return YES;
     
     NSString *lower = [fontName lowercaseString];
@@ -80,7 +72,7 @@ static CGFloat getScaledSize(CGFloat originalSize) {
     return originalSize * g_fontSizeScale;
 }
 
-// ================= [核心通用转换器] =================
+// ================= [核心通用转换器：彻底解决卡死与漏覆盖] =================
 static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     if (!origDesc || isDangerousIconQueue()) return origDesc;
     
@@ -88,12 +80,33 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     if (reqName && shouldBypassFont(reqName)) return origDesc;
 
     BOOL wantBold = (origDesc.symbolicTraits & UIFontDescriptorTraitBold) != 0;
+    
+    // 【键盘漏覆盖修复 1】iOS 有时把粗体权重藏在 Traits 字典里，导致我们漏判粗体
+    NSDictionary *traitsDict = origDesc.fontAttributes[UIFontDescriptorTraitsAttribute];
+    if (traitsDict && traitsDict[UIFontWeightTrait]) {
+        if ([traitsDict[UIFontWeightTrait] floatValue] >= 0.2) wantBold = YES;
+    }
+
     NSString *targetFont = (wantBold && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
     if (!targetFont) return origDesc;
 
     UIFontDescriptor *newDesc = [UIFontDescriptor fontDescriptorWithName:targetFont size:origDesc.pointSize];
+    
+    // 💥【文件夹卡死终极修复】：保留原字体的变换矩阵！
+    // 文件夹展开动画强依赖 Matrix 进行渲染。如果不继承，CoreAnimation 瞬间死循环卡死！
+    id matrix = origDesc.fontAttributes[@"UIFontDescriptorMatrixAttribute"];
+    if (!matrix) matrix = origDesc.fontAttributes[@"NSFontMatrixAttribute"];
+    if (matrix) {
+        newDesc = [newDesc fontDescriptorByAddingAttributes:@{@"UIFontDescriptorMatrixAttribute": matrix}];
+    }
+    
     if (origDesc.symbolicTraits) {
-        newDesc = [newDesc fontDescriptorWithSymbolicTraits:origDesc.symbolicTraits];
+        UIFontDescriptor *traitDesc = [newDesc fontDescriptorWithSymbolicTraits:origDesc.symbolicTraits];
+        // 【键盘漏覆盖修复 2】如果自定义字体不支持苹果的特殊压缩特征，traitDesc 会返回 nil。
+        // 以前我们直接返回 nil 导致退回系统字体，现在我们用自定义无特征字体兜底！键盘100%覆盖！
+        if (traitDesc) {
+            newDesc = traitDesc;
+        }
     }
     return newDesc;
 }
@@ -210,6 +223,16 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
 // ---------------------------------------------------------
 // 包装重定向区 (这些负责把请求重定向给上面的核心方法，绝不加锁)
 // ---------------------------------------------------------
+
+// 【键盘漏覆盖修复 3】强行拦截键盘的私有底层调用！
++ (id)_keyboardFontOfSize:(double)size weight:(double)weight {
+    if (!g_enabled || isDangerousIconQueue()) return %orig;
+    if (isHooking) return %orig;
+    NSString *targetFont = (weight >= 0.2 && g_customBoldFontName) ? g_customBoldFontName : g_customFontName;
+    id ret = [self fontWithName:targetFont size:getScaledSize(size)];
+    return ret ? ret : %orig;
+}
+
 + (id)systemFontOfSize:(CGFloat)size {
     if (!g_enabled || isDangerousIconQueue()) return %orig;
     if (isHooking) return %orig;
@@ -439,8 +462,6 @@ static UIFontDescriptor* getReplacedDescriptor(UIFontDescriptor *origDesc) {
     g_customFontName = prefs[@"CustomFont"];
     g_customBoldFontName = prefs[@"CustomBoldFont"];
     g_fontSizeScale = prefs[@"FontScale"] ? [prefs[@"FontScale"] doubleValue] : 1.0;
-    
-    // [修复] 移除了 g_fontSizeScale = 1.0; 的强制重置，恢复用户设置的缩放体验！
     
     if (!g_customFontName || g_customFontName.length == 0) return;
 
