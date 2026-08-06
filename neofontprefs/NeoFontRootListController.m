@@ -202,7 +202,7 @@ static NSString * GetFontDirPath() {
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *killallPath = jbroot(@"/usr/bin/killall");
     
-    // 1. 先杀所有持有字体缓存的进程，确保百分百生效
+    // 最全杀进程列表（确保字体缓存全部清掉）
     if ([fm fileExistsAtPath:killallPath]) {
         const char *procs[] = {
             "widgetkitd",
@@ -213,6 +213,7 @@ static NSString * GetFontDirPath() {
             "com.apple.Keyboard",
             "Search",
             "mediaserverd",
+            "SpringBoard",
             NULL
         };
         for (int i = 0; procs[i]; i++) {
@@ -222,7 +223,12 @@ static NSString * GetFontDirPath() {
         }
     }
     
-    // 2. 优先 sbreload（最干净，有黑屏）
+    // 强制发一次热更新通知
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         CFSTR("com.iosdump.neofont.prefsChanged"),
+                                         NULL, NULL, true);
+    
+    // 1. 优先 sbreload（最干净，有黑屏）
     NSString *sbreloadPath = jbroot(@"/usr/bin/sbreload");
     if ([fm fileExistsAtPath:sbreloadPath]) {
         const char *args[] = {"sbreload", NULL};
@@ -230,14 +236,14 @@ static NSString * GetFontDirPath() {
         return;
     }
     
-    // 3. Fallback：kill backboardd
+    // 2. Fallback：kill backboardd
     if ([fm fileExistsAtPath:killallPath]) {
         const char *args[] = {"killall", "-9", "backboardd", NULL};
         posix_spawn(&pid, [killallPath UTF8String], NULL, NULL, (char *const *)args, environ);
         return;
     }
     
-    // 4. 最终 Fallback：直接杀 SpringBoard（保证所有环境都能触发）
+    // 3. 最终 Fallback：再杀一次 SpringBoard
     if ([fm fileExistsAtPath:killallPath]) {
         const char *args[] = {"killall", "-9", "SpringBoard", NULL};
         posix_spawn(&pid, [killallPath UTF8String], NULL, NULL, (char *const *)args, environ);
