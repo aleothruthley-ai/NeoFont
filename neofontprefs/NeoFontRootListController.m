@@ -28,6 +28,16 @@ static NSString * GetFontDirPath() {
 
 @implementation NeoFontRootListController
 
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    UIBarButtonItem *tgButton = [[UIBarButtonItem alloc] initWithTitle:@"TG频道" style:UIBarButtonItemStylePlain target:self action:@selector(openTGChannel)];
+    self.navigationItem.rightBarButtonItem = tgButton;
+}
+
+- (void)openTGChannel {
+    [[UIApplication sharedApplication] openURL:[NSURL URLWithString:@"https://t.me/iosdumpzzz"] options:@{} completionHandler:nil];
+}
+
 - (UITableViewStyle)tableViewStyle {
     if (@available(iOS 13.0, *)) return UITableViewStyleInsetGrouped;
     return UITableViewStyleGrouped;
